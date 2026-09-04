@@ -1,0 +1,78 @@
+import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
+import { message } from 'antd'
+import type { ApiResponse } from '@/types'
+
+/** 令牌存取（M1 起配合刷新令牌轮换） */
+const ACCESS_TOKEN_KEY = 'access_token'
+const REFRESH_TOKEN_KEY = 'refresh_token'
+
+export function getAccessToken(): string | null {
+  return localStorage.getItem(ACCESS_TOKEN_KEY)
+}
+
+export function setTokens(accessToken: string, refreshToken: string): void {
+  localStorage.setItem(ACCESS_TOKEN_KEY, accessToken)
+  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
+}
+
+export function clearTokens(): void {
+  localStorage.removeItem(ACCESS_TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
+}
+
+const request = axios.create({
+  baseURL: '/api/v1',
+  timeout: 15000,
+})
+
+// 请求拦截器：自动携带 Bearer Token
+request.interceptors.request.use((config) => {
+  const token = getAccessToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// 响应拦截器：统一业务响应处理 + 401 跳登录 + 统一错误提示
+request.interceptors.response.use(
+  (response) => {
+    const res = response.data as ApiResponse
+    if (res.code === 0) {
+      return response
+    }
+    // 业务失败：统一提示（登录页静默处理由调用方决定）
+    if (res.code !== 401) {
+      message.error(res.message || '请求失败')
+    }
+    return Promise.reject(new Error(res.message || '请求失败'))
+  },
+  (error: AxiosError<ApiResponse>) => {
+    const status = error.response?.status
+    if (status === 401) {
+      clearTokens()
+      if (!window.location.pathname.startsWith('/login')) {
+        message.error('登录已过期，请重新登录')
+        window.location.href = '/login'
+      }
+    } else {
+      const msg = error.response?.data?.message || '网络异常，请稍后重试'
+      message.error(msg)
+    }
+    return Promise.reject(error)
+  },
+)
+
+/** 类型化 GET：直接返回业务 data */
+export async function get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  const res = await request.get<ApiResponse<T>>(url, config)
+  return res.data.data
+}
+
+/** 类型化 POST：直接返回业务 data */
+export async function post<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  const res = await request.post<ApiResponse<T>>(url, data, config)
+  return res.data.data
+}
+
+export default request
