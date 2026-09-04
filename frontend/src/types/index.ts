@@ -21,11 +21,15 @@ export interface UserInfo {
   username: string
   nickname?: string
   real_name?: string
+  gender?: number
+  birthday?: string | null
   avatar?: string
   dept_id?: number | null
   dept_name?: string
   position_id?: number | null
   position_name?: string
+  department_id?: number | null
+  post?: string
   phone?: string
   email?: string
   status?: number

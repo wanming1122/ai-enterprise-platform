@@ -128,4 +128,30 @@ export async function post<T>(url: string, data?: unknown, config?: AxiosRequest
   return res.data.data
 }
 
+/** 类型化 PUT：直接返回业务 data */
+export async function put<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  const res = await request.put<ApiResponse<T>>(url, data, config)
+  return res.data.data
+}
+
+/** 类型化 DELETE：直接返回业务 data */
+export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  const res = await request.delete<ApiResponse<T>>(url, config)
+  return res.data.data
+}
+
+/** 文件下载（导出/模板）：返回 Blob，由调用方触发浏览器下载 */
+export async function downloadBlob(
+  url: string,
+  params?: Record<string, unknown>,
+): Promise<Blob> {
+  const token = getAccessToken()
+  const res = await raw.get<Blob>(url, {
+    params,
+    responseType: 'blob',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  return res.data
+}
+
 export default request

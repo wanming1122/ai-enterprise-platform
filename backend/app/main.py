@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.routers import auth
+from app.routers import auth, department, role, user
 from app.utils.response import error, ok
 
 app = FastAPI(
@@ -58,6 +58,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # ---------- 路由 ----------
 
 app.include_router(auth.router)
+app.include_router(user.router)
+app.include_router(department.router)
+app.include_router(role.router)
 
 @app.get("/api/v1/health", tags=["系统"])
 def health():

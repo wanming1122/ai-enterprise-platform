@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import MainLayout from '@/layouts/MainLayout'
 import Login from '@/views/login'
 import Dashboard from '@/views/dashboard'
+import UserManage from '@/views/org/user'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -13,6 +14,7 @@ import type { MenuItem } from '@/types'
  */
 const viewMap: Record<string, ComponentType> = {
   'views/dashboard/index': Dashboard,
+  'views/org/user/index': UserManage,
 }
 
 function renderView(component?: string, name?: string): ReactNode {
