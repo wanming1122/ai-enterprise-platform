@@ -1,30 +1,54 @@
 import { Layout, Menu, Dropdown, Avatar, Space, Typography } from 'antd'
+import type { MenuProps } from 'antd'
 import {
+  ApartmentOutlined,
   DashboardOutlined,
+  FileTextOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useUserStore } from '@/stores/user'
+import type { MenuItem } from '@/types'
 
 const { Sider, Header, Content } = Layout
 
-/** 静态主导航（M1 起由后端菜单树动态生成） */
-const navItems = [
-  { key: '/', icon: <DashboardOutlined />, label: '工作台' },
-]
+/** 菜单图标映射：后端存储的图标名 → antd 图标组件 */
+const iconMap: Record<string, ReactNode> = {
+  DashboardOutlined: <DashboardOutlined />,
+  ApartmentOutlined: <ApartmentOutlined />,
+  FileTextOutlined: <FileTextOutlined />,
+  SettingOutlined: <SettingOutlined />,
+  UserOutlined: <UserOutlined />,
+}
+
+/** 授权菜单树 → antd Menu items（目录转子菜单） */
+function toMenuItems(menus: MenuItem[]): NonNullable<MenuProps['items']> {
+  return menus.map((m) => {
+    const item = {
+      key: m.path ?? String(m.id),
+      icon: m.icon ? iconMap[m.icon] : undefined,
+      label: m.name,
+    }
+    if (m.type === 'dir' && m.children?.length) {
+      return { ...item, children: toMenuItems(m.children) }
+    }
+    return item
+  })
+}
 
 export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
-  const { userInfo, logout } = useUserStore()
+  const { userInfo, menus, logout } = useUserStore()
 
-  const handleLogout = () => {
-    logout()
+  const handleLogout = async () => {
+    await logout()
     navigate('/login')
   }
 
@@ -53,7 +77,7 @@ export default function MainLayout() {
           theme="dark"
           mode="inline"
           selectedKeys={[location.pathname]}
-          items={navItems}
+          items={toMenuItems(menus)}
           onClick={({ key }) => navigate(key)}
         />
       </Sider>

@@ -1,13 +1,17 @@
-import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
+import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from 'axios'
 import { message } from 'antd'
 import type { ApiResponse } from '@/types'
 
-/** 令牌存取（M1 起配合刷新令牌轮换） */
+/** 令牌存取：access（30分钟）/ refresh（7天，轮换） */
 const ACCESS_TOKEN_KEY = 'access_token'
 const REFRESH_TOKEN_KEY = 'refresh_token'
 
 export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_TOKEN_KEY)
+}
+
+export function getRefreshToken(): string | null {
+  return localStorage.getItem(REFRESH_TOKEN_KEY)
 }
 
 export function setTokens(accessToken: string, refreshToken: string): void {
@@ -25,6 +29,34 @@ const request = axios.create({
   timeout: 15000,
 })
 
+/** 无拦截器的裸实例：仅用于刷新令牌，避免刷新请求触发 401 循环 */
+const raw = axios.create({
+  baseURL: '/api/v1',
+  timeout: 15000,
+})
+
+/** 刷新令牌单例：并发 401 只触发一次刷新 */
+let refreshPromise: Promise<string> | null = null
+
+async function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const refreshToken = getRefreshToken()
+      if (!refreshToken) throw new Error('无刷新令牌')
+      const res = await raw.post<ApiResponse<{ access_token: string; refresh_token: string }>>(
+        '/auth/refresh',
+        { refresh_token: refreshToken },
+      )
+      const data = res.data.data
+      setTokens(data.access_token, data.refresh_token)
+      return data.access_token
+    })().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
 // 请求拦截器：自动携带 Bearer Token
 request.interceptors.request.use((config) => {
   const token = getAccessToken()
@@ -34,30 +66,51 @@ request.interceptors.request.use((config) => {
   return config
 })
 
-// 响应拦截器：统一业务响应处理 + 401 跳登录 + 统一错误提示
+// 响应拦截器：统一业务响应处理 + 401 无感刷新重放 + 统一错误提示
 request.interceptors.response.use(
   (response) => {
     const res = response.data as ApiResponse
     if (res.code === 0) {
       return response
     }
-    // 业务失败：统一提示（登录页静默处理由调用方决定）
     if (res.code !== 401) {
       message.error(res.message || '请求失败')
     }
     return Promise.reject(new Error(res.message || '请求失败'))
   },
-  (error: AxiosError<ApiResponse>) => {
+  async (error: AxiosError<ApiResponse>) => {
     const status = error.response?.status
+    const config = error.config as (InternalAxiosRequestConfig & { _retried?: boolean }) | undefined
+    const isLogin = config?.url?.includes('/auth/login')
+
+    // 401 且非登录接口：尝试刷新令牌后重放原请求
+    if (status === 401 && config && !config._retried && !isLogin) {
+      try {
+        const newToken = await refreshAccessToken()
+        config._retried = true
+        config.headers.Authorization = `Bearer ${newToken}`
+        return request(config)
+      } catch {
+        clearTokens()
+        if (!window.location.pathname.startsWith('/login')) {
+          message.error('登录已过期，请重新登录')
+          window.location.href = '/login'
+        }
+        return Promise.reject(error)
+      }
+    }
+
+    const msg = error.response?.data?.message || '请求失败'
     if (status === 401) {
-      clearTokens()
+      // 登录接口 401（密码错误等）：提示但不跳转
       if (!window.location.pathname.startsWith('/login')) {
         message.error('登录已过期，请重新登录')
         window.location.href = '/login'
+      } else {
+        message.error(msg)
       }
     } else {
-      const msg = error.response?.data?.message || '网络异常，请稍后重试'
-      message.error(msg)
+      message.error(msg === '请求失败' ? '网络异常，请稍后重试' : msg)
     }
     return Promise.reject(error)
   },

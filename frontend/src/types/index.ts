@@ -30,6 +30,8 @@ export interface UserInfo {
   email?: string
   status?: number
   last_login_at?: string | null
+  /** 角色编码列表 */
+  roles?: string[]
 }
 
 /** 菜单节点（后端菜单树驱动动态路由与侧边导航） */
