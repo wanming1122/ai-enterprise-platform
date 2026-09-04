@@ -5,6 +5,10 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from app import models  # noqa: F401  侧载全部模型，供 autogenerate 发现
+from app.core.config import settings
+from app.db.base import Base
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
