@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# 环境变量（含密钥，禁止入库，仅提交 .env.example）
+.env
+
+# 运行时数据
+backend/media/
+backend/data/
+*.sqlite3
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
