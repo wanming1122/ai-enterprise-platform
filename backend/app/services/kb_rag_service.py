@@ -314,6 +314,52 @@ def remove_file_vectors(kb: KBKnowledgeBase, file_id: int) -> None:
         collection.delete(where={"file_id": file_id})
 
 
+def retrieve(db: Session, *, query: str, kb_ids: list[int], top_k: int = 6) -> list[dict]:
+    """跨库向量检索：按库各自的维度生成查询向量，过滤软删，按相似度合并排序。"""
+    kbs = db.scalars(
+        select(KBKnowledgeBase).where(KBKnowledgeBase.id.in_(kb_ids), KBKnowledgeBase.status != 2)
+    ).all()
+    if not kbs:
+        raise HTTPException(status_code=422, detail="知识库不存在或已删除")
+
+    results: list[dict] = []
+    for kb in kbs:
+        collection = _get_collection(kb, create=False)
+        if collection is None:
+            continue
+        qv = embed_texts([query], kb.embedding_dimension)[0]
+        res = collection.query(
+            query_embeddings=[qv], n_results=top_k,
+            where={"status": "active"},
+            include=["documents", "metadatas", "distances"],
+        )
+        for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
+            results.append({
+                "kb_id": kb.id, "kb_name": kb.name,
+                "file_id": meta.get("file_id"), "chunk_index": meta.get("chunk_index"),
+                "content": doc,
+                "title_path": meta.get("title_path") or None,
+                "page": meta.get("page") or None,
+                "chunk_type": meta.get("chunk_type", "text"),
+                "similarity": round(max(0.0, 1.0 - dist), 4),  # cosine 距离转相似度
+            })
+
+    # MySQL 侧兜底过滤（文件软删即不可引用）
+    file_ids = {r["file_id"] for r in results if r["file_id"]}
+    valid = set(
+        db.scalars(select(KBFile.id).where(KBFile.id.in_(file_ids), KBFile.status != 2)).all()
+    ) if file_ids else set()
+    results = [r for r in results if r["file_id"] in valid]
+
+    file_names = dict(
+        db.execute(select(KBFile.id, KBFile.file_name).where(KBFile.id.in_(file_ids))).all()
+    ) if file_ids else {}
+    for r in results:
+        r["file_name"] = file_names.get(r["file_id"], "")
+    results.sort(key=lambda x: -x["similarity"])
+    return results[:top_k]
+
+
 def drop_kb_collection(kb: KBKnowledgeBase) -> None:
     """整库删除时移除 collection。"""
     try:

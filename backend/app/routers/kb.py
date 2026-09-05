@@ -1,12 +1,13 @@
-"""知识库路由：库 CRUD/软删/重建、文件上传/列表/详情/软删/重解析/切片预览。检索问答接口在 T3 增加。"""
+"""知识库路由：库管理、文件管理（T1/T2）与检索调试、SSE 问答、会话历史（T3）。"""
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import require_permissions
 from app.db.session import get_db
 from app.models.user import SysUser
-from app.schemas.kb import KBCreate, KBUpdate
-from app.services import kb_rag_service, kb_service
+from app.schemas.kb import KBChatIn, KBCreate, KBSearchIn, KBUpdate
+from app.services import kb_chat_service, kb_rag_service, kb_service
 from app.utils.page import page_result
 from app.utils.response import ok
 
@@ -163,3 +164,57 @@ def reparse_file(
     db.commit()
     background_tasks.add_task(kb_rag_service.process_file, file_id)
     return ok(message="已加入解析队列")
+
+
+# ---------- 检索与问答（M3-T3） ----------
+
+@router.post("/search")
+def search(
+    data: KBSearchIn,
+    operator: SysUser = Depends(require_permissions("kb:search")),
+    db: Session = Depends(get_db),
+):
+    """检索调试：query + kb_ids + top_k，返回切片、相似度与溯源信息。"""
+    return ok(kb_chat_service.search_debug(
+        db, operator, query=data.query, kb_ids=data.kb_ids, top_k=data.top_k
+    ))
+
+
+@router.post("/chat")
+def chat(
+    data: KBChatIn,
+    operator: SysUser = Depends(require_permissions("kb:chat")),
+    db: Session = Depends(get_db),
+):
+    """知识库问答：SSE 流式（message/reasoning → citations → done），支持多轮。"""
+    kb_chat_service.validate_kbs(db, data.kb_ids)  # 流式开启前校验
+    return StreamingResponse(
+        kb_chat_service.chat_sse(
+            operator.id, operator.username, question=data.question,
+            kb_ids=data.kb_ids, conversation_id=data.conversation_id, top_k=data.top_k,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/conversations")
+def list_conversations(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    operator: SysUser = Depends(require_permissions("kb:chat")),
+    db: Session = Depends(get_db),
+):
+    """我的问答会话列表。"""
+    items, total = kb_chat_service.list_conversations(db, operator, page=page, page_size=page_size)
+    return ok(page_result(items, total, page, page_size))
+
+
+@router.get("/conversations/{conversation_id}")
+def conversation_detail(
+    conversation_id: int,
+    operator: SysUser = Depends(require_permissions("kb:chat")),
+    db: Session = Depends(get_db),
+):
+    """会话历史（仅本人会话）。"""
+    return ok(kb_chat_service.conversation_detail(db, operator, conversation_id))

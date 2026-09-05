@@ -16,3 +16,16 @@ class KBUpdate(BaseModel):
     description: str | None = None
     chunk_size: int | None = None
     chunk_overlap: int | None = None
+
+
+class KBSearchIn(BaseModel):
+    query: str
+    kb_ids: list[int]
+    top_k: int = 6
+
+
+class KBChatIn(BaseModel):
+    question: str
+    kb_ids: list[int]
+    conversation_id: int | None = None
+    top_k: int = 6
