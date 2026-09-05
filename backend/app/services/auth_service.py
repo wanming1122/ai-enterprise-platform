@@ -14,6 +14,7 @@ from app.core.security import (
     decode_token,
 )
 from app.models.department import SysDepartment
+from app.models.position import SysPosition
 from app.models.role import SysRole
 from app.models.user import SysUser
 from app.models.user_role_relation import SysUserRoleRelation
@@ -31,11 +32,15 @@ _ip_fail: dict[str, dict] = {}
 
 
 def _serialize_user(db: Session, user: SysUser) -> dict:
-    """序列化当前用户信息（含部门名与角色编码）。"""
+    """序列化当前用户信息（含部门名、职位与角色编码）。"""
     dept_name = None
     if user.department_id:
         dept = db.get(SysDepartment, user.department_id)
         dept_name = dept.name if dept else None
+    position_name = None
+    if user.position_id:
+        position = db.get(SysPosition, user.position_id)
+        position_name = position.name if position and position.status != 2 else None
     roles = db.scalars(
         select(SysRole)
         .join(SysUserRoleRelation, SysUserRoleRelation.role_id == SysRole.id)
@@ -49,6 +54,8 @@ def _serialize_user(db: Session, user: SysUser) -> dict:
         "avatar": user.avatar,
         "department_id": user.department_id,
         "dept_name": dept_name,
+        "position_id": user.position_id,
+        "position_name": position_name,
         "post": user.post,
         "phone": user.phone,
         "email": user.email,

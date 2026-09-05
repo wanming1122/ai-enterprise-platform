@@ -9,17 +9,19 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.department import SysDepartment
+from app.models.position import SysPosition
 from app.models.role import SysRole
 from app.models.user import SysUser
 from app.models.user_role_relation import SysUserRoleRelation
 from app.schemas.user import UserCreate, UserUpdate
 from app.services.operation_log_service import write_log
+from app.services.position_service import sync_position_role
 from app.utils.excel import export_workbook, read_workbook
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-IMPORT_HEADERS = ["账号", "姓名", "昵称", "手机", "邮箱", "部门", "岗位", "角色", "初始密码"]
-EXPORT_HEADERS = ["账号", "姓名", "昵称", "手机", "邮箱", "部门", "岗位", "角色", "状态", "最近登录时间"]
+IMPORT_HEADERS = ["账号", "姓名", "昵称", "手机", "邮箱", "部门", "职位", "角色", "初始密码"]
+EXPORT_HEADERS = ["账号", "姓名", "昵称", "手机", "邮箱", "部门", "职位", "角色", "状态", "最近登录时间"]
 DEFAULT_IMPORT_PASSWORD = "admin123456"
 
 
@@ -45,11 +47,15 @@ def _set_user_roles(db: Session, user_id: int, role_ids: list[int]) -> None:
 
 
 def serialize_user(db: Session, user: SysUser) -> dict:
-    """序列化用户（含部门名与角色编码）。"""
+    """序列化用户（含部门名、职位与角色编码）。"""
     dept_name = None
     if user.department_id:
         dept = db.get(SysDepartment, user.department_id)
         dept_name = dept.name if dept else None
+    position_name = None
+    if user.position_id:
+        position = db.get(SysPosition, user.position_id)
+        position_name = position.name if position and position.status != 2 else None
     role_codes = db.scalars(
         select(SysRole.code)
         .join(SysUserRoleRelation, SysUserRoleRelation.role_id == SysRole.id)
@@ -66,6 +72,8 @@ def serialize_user(db: Session, user: SysUser) -> dict:
         "phone": user.phone,
         "department_id": user.department_id,
         "dept_name": dept_name,
+        "position_id": user.position_id,
+        "position_name": position_name,
         "post": user.post,
         "roles": role_codes,
         "status": user.status,
@@ -125,10 +133,18 @@ def get_user(db: Session, user_id: int) -> SysUser:
     return user
 
 
+def _validate_position(db: Session, position_id: int | None) -> None:
+    if position_id is not None:
+        position = db.get(SysPosition, position_id)
+        if position is None or position.status != 1:
+            raise HTTPException(status_code=422, detail="职位不存在或已停用")
+
+
 def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
     if db.scalar(select(SysUser).where(SysUser.username == data.username)):
         raise HTTPException(status_code=422, detail="账号已存在")
     validate_password(data.password)
+    _validate_position(db, data.position_id)
     user = SysUser(
         username=data.username,
         password_hash=pwd_context.hash(data.password),
@@ -139,12 +155,15 @@ def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
         email=data.email,
         phone=data.phone,
         department_id=data.department_id,
+        position_id=data.position_id,
         post=data.post,
         status=1,
     )
     db.add(user)
     db.flush()
     _set_user_roles(db, user.id, data.role_ids)
+    # 职位绑定角色时，新用户选该职位自动并入对应权限模板角色
+    sync_position_role(db, user.id, None, data.position_id)
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
               action="新增用户", params=data.model_dump(exclude={"password"}), result=1)
@@ -155,10 +174,15 @@ def update_user(db: Session, user_id: int, data: UserUpdate, operator: SysUser) 
     user = get_user(db, user_id)
     updates = data.model_dump(exclude_unset=True)
     role_ids = updates.pop("role_ids", None)
+    old_position_id = user.position_id
+    if "position_id" in updates:
+        _validate_position(db, updates["position_id"])
     for field, value in updates.items():
         setattr(user, field, value)
     if role_ids is not None:
         _set_user_roles(db, user.id, role_ids)
+    # 职位变更时同步权限模板角色：移除旧职位角色、并入新职位角色
+    sync_position_role(db, user.id, old_position_id, user.position_id)
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
               action="编辑用户", params={"id": user_id, **data.model_dump(exclude_unset=True)}, result=1)
@@ -204,6 +228,7 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
 
     dept_map = {d.name: d.id for d in db.scalars(select(SysDepartment).where(SysDepartment.status != 2)).all()}
     role_map = {r.code: r.id for r in db.scalars(select(SysRole).where(SysRole.status != 2)).all()}
+    position_map = {p.name: p.id for p in db.scalars(select(SysPosition).where(SysPosition.status == 1)).all()}
     existing = set(db.scalars(select(SysUser.username)).all())
 
     success = 0
@@ -227,6 +252,11 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
         if dept_name and department_id is None:
             errors.append({"row": idx, "reason": f"部门 {dept_name} 不存在"})
             continue
+        position_name = row.get("职位", "")
+        position_id = position_map.get(position_name) if position_name else None
+        if position_name and position_id is None:
+            errors.append({"row": idx, "reason": f"职位 {position_name} 不存在或已停用"})
+            continue
         role_codes = [c.strip() for c in row.get("角色", "").split(",") if c.strip()]
         role_ids: list[int] = []
         invalid_role = None
@@ -248,12 +278,13 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
             phone=row.get("手机") or None,
             email=row.get("邮箱") or None,
             department_id=department_id,
-            post=row.get("岗位") or None,
+            position_id=position_id,
             status=1,
         )
         db.add(user)
         db.flush()
         _set_user_roles(db, user.id, role_ids)
+        sync_position_role(db, user.id, None, position_id)
         existing.add(username)
         success += 1
 
@@ -277,6 +308,7 @@ def export_users(
 
     status_text = {1: "正常", 0: "停用"}
     dept_names = {d.id: d.name for d in db.scalars(select(SysDepartment)).all()}
+    position_names = {p.id: p.name for p in db.scalars(select(SysPosition)).all()}
     rows = []
     for u in users:
         role_codes = db.scalars(
@@ -291,7 +323,7 @@ def export_users(
             u.phone or "",
             u.email or "",
             dept_names.get(u.department_id, "") if u.department_id else "",
-            u.post or "",
+            position_names.get(u.position_id, "") if u.position_id else "",
             "/".join(role_codes),
             status_text.get(u.status, ""),
             u.last_login_at.strftime("%Y-%m-%d %H:%M:%S") if u.last_login_at else "",
@@ -303,6 +335,6 @@ def get_template() -> bytes:
     """导入模板：表头 + 示例行。"""
     sample = [
         "zhangsan", "张三", "三哥", "13800000001", "zhangsan@example.com",
-        "技术部", "工程师", "employee", "admin123456",
+        "技术部", "软件工程师", "employee", "admin123456",
     ]
     return export_workbook(IMPORT_HEADERS, [sample])

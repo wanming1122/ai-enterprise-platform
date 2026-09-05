@@ -24,7 +24,10 @@ class SysUser(Base):
     department_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("sys_department.id"), comment="所属部门"
     )
-    post: Mapped[str | None] = mapped_column(String(64), comment="岗位（M2 升级为 position_id 外键）")
+    position_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sys_position.id"), comment="职位（M2 起替代岗位文本）"
+    )
+    post: Mapped[str | None] = mapped_column(String(64), comment="岗位（M1 遗留文本字段，保留兼容）")
     avatar: Mapped[str | None] = mapped_column(Text, comment="头像（Data URL）")
     status: Mapped[int] = mapped_column(TINYINT, default=1, comment="1正常 0停用 2软删除")
     need_reset_pwd: Mapped[int] = mapped_column(TINYINT, default=0, comment="0否 1是（管理员重置密码后标记）")

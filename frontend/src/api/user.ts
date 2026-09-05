@@ -39,6 +39,7 @@ export interface UserForm {
   email?: string
   phone?: string
   department_id?: number
+  position_id?: number
   post?: string
   role_ids?: number[]
 }

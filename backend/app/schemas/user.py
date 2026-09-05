@@ -14,6 +14,7 @@ class UserCreate(BaseModel):
     email: str | None = None
     phone: str | None = None
     department_id: int | None = None
+    position_id: int | None = None
     post: str | None = None
     role_ids: list[int] = []
 
@@ -26,5 +27,6 @@ class UserUpdate(BaseModel):
     email: str | None = None
     phone: str | None = None
     department_id: int | None = None
+    position_id: int | None = None
     post: str | None = None
     role_ids: list[int] | None = None

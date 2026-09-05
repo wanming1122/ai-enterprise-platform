@@ -20,6 +20,7 @@ import { UploadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
+import { positionApi, type PositionOption } from '@/api/position'
 import { saveBlob, userApi, type DeptOption, type ImportResult, type RoleOption, type UserForm } from '@/api/user'
 import type { UserInfo } from '@/types'
 
@@ -48,6 +49,7 @@ export default function UserManage() {
   const [loading, setLoading] = useState(false)
   const [depts, setDepts] = useState<DeptOption[]>([])
   const [roles, setRoles] = useState<RoleOption[]>([])
+  const [positions, setPositions] = useState<PositionOption[]>([])
   const [editing, setEditing] = useState<UserInfo | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -61,9 +63,10 @@ export default function UserManage() {
 
   const loadOptions = useCallback(async () => {
     try {
-      const [d, r] = await Promise.all([userApi.departments(), userApi.roles()])
+      const [d, r, p] = await Promise.all([userApi.departments(), userApi.roles(), positionApi.options()])
       setDepts(d)
       setRoles(r)
+      setPositions(p)
     } catch {
       // 提示已由拦截器统一处理
     }
@@ -115,7 +118,7 @@ export default function UserManage() {
       email: record.email,
       phone: record.phone,
       department_id: record.department_id ?? undefined,
-      post: record.post,
+      position_id: record.position_id ?? undefined,
       role_ids: (record.roles ?? []).map((code) => Number(roleIdMap.get(code)) || 0).filter(Boolean),
     })
     setModalOpen(true)
@@ -193,7 +196,12 @@ export default function UserManage() {
     { title: '姓名', dataIndex: 'real_name', width: 100, render: (v: string) => v || '-' },
     { title: '昵称', dataIndex: 'nickname', width: 100, render: (v: string) => v || '-' },
     { title: '部门', dataIndex: 'dept_name', width: 100, render: (v: string) => v || '-' },
-    { title: '岗位', dataIndex: 'post', width: 100, render: (v: string) => v || '-' },
+    {
+      title: '职位',
+      key: 'position',
+      width: 110,
+      render: (_: unknown, record: UserInfo) => record.position_name || record.post || '-',
+    },
     { title: '手机', dataIndex: 'phone', width: 120, render: (v: string) => v || '-' },
     { title: '邮箱', dataIndex: 'email', width: 160, render: (v: string) => v || '-' },
     {
@@ -369,8 +377,15 @@ export default function UserManage() {
           <Form.Item name="department_id" label="部门">
             <TreeSelect allowClear placeholder="选择部门" treeData={toTreeData(depts) as never} />
           </Form.Item>
-          <Form.Item name="post" label="岗位">
-            <Input placeholder="岗位" />
+          <Form.Item name="position_id" label="职位" extra="选择职位后自动获得其绑定角色的权限模板">
+            <Select allowClear placeholder="选择职位" showSearch optionFilterProp="label">
+              {positions.map((p) => (
+                <Select.Option key={p.id} value={p.id} label={p.name}>
+                  {p.name}
+                  {p.role_name ? `（${p.role_name}）` : ''}
+                </Select.Option>
+              ))}
+            </Select>
           </Form.Item>
           <Form.Item name="role_ids" label="角色">
             <Select mode="multiple" allowClear placeholder="选择角色">
