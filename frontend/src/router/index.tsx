@@ -5,6 +5,8 @@ import Login from '@/views/login'
 import Dashboard from '@/views/dashboard'
 import UserManage from '@/views/org/user'
 import DepartmentManage from '@/views/org/department'
+import RoleManage from '@/views/org/role'
+import MenuManage from '@/views/org/menu'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -17,6 +19,8 @@ const viewMap: Record<string, ComponentType> = {
   'views/dashboard/index': Dashboard,
   'views/org/user/index': UserManage,
   'views/org/department/index': DepartmentManage,
+  'views/org/role/index': RoleManage,
+  'views/org/menu/index': MenuManage,
 }
 
 function renderView(component?: string, name?: string): ReactNode {
