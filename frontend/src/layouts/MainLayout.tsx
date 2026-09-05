@@ -3,6 +3,7 @@ import type { MenuProps } from 'antd'
 import {
   ApartmentOutlined,
   DashboardOutlined,
+  DatabaseOutlined,
   FileTextOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
@@ -26,6 +27,7 @@ const iconMap: Record<string, ReactNode> = {
   SettingOutlined: <SettingOutlined />,
   UserOutlined: <UserOutlined />,
   RobotOutlined: <RobotOutlined />,
+  DatabaseOutlined: <DatabaseOutlined />,
 }
 
 /** 授权菜单树 → antd Menu items（目录转子菜单） */

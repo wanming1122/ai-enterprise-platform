@@ -17,6 +17,9 @@ import ProfileAttendance from '@/views/profile/attendance'
 import KBManage from '@/views/ai/kb'
 import KBChat from '@/views/ai/kb/chat'
 import ModelConfig from '@/views/ai/model'
+import NL2SQL from '@/views/ai/nl2sql'
+import NL2SQLProduct from '@/views/ai/nl2sql/product'
+import NL2SQLHistory from '@/views/ai/nl2sql/history'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -41,6 +44,9 @@ const viewMap: Record<string, ComponentType> = {
   'views/ai/kb/index': KBManage,
   'views/ai/kb/chat/index': KBChat,
   'views/ai/model/index': ModelConfig,
+  'views/ai/nl2sql/index': NL2SQL,
+  'views/ai/nl2sql/product/index': NL2SQLProduct,
+  'views/ai/nl2sql/history/index': NL2SQLHistory,
 }
 
 function renderView(component?: string, name?: string): ReactNode {
