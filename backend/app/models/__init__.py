@@ -2,6 +2,7 @@
 from app.models.user import SysUser
 from app.models.department import SysDepartment
 from app.models.position import SysPosition
+from app.models.attendance import AttRecord, AttRule
 from app.models.role import SysRole
 from app.models.user_role_relation import SysUserRoleRelation
 from app.models.menu import SysMenu
@@ -19,6 +20,8 @@ __all__ = [
     "SysUser",
     "SysDepartment",
     "SysPosition",
+    "AttRecord",
+    "AttRule",
     "SysRole",
     "SysUserRoleRelation",
     "SysMenu",

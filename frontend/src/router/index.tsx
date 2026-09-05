@@ -8,6 +8,8 @@ import DepartmentManage from '@/views/org/department'
 import RoleManage from '@/views/org/role'
 import MenuManage from '@/views/org/menu'
 import PositionManage from '@/views/org/position'
+import AttendanceRecord from '@/views/attendance/record'
+import AttendanceRule from '@/views/attendance/rule'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -21,6 +23,8 @@ const viewMap: Record<string, ComponentType> = {
   'views/org/user/index': UserManage,
   'views/org/department/index': DepartmentManage,
   'views/org/position/index': PositionManage,
+  'views/attendance/record/index': AttendanceRecord,
+  'views/attendance/rule/index': AttendanceRule,
   'views/org/role/index': RoleManage,
   'views/org/menu/index': MenuManage,
 }

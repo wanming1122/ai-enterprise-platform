@@ -68,6 +68,7 @@ export const userApi = {
   downloadTemplate: () => downloadBlob('/users/template'),
   departments: () => get<DeptOption[]>('/departments/options'),
   roles: () => get<RoleOption[]>('/roles/options'),
+  users: () => get<{ id: number; username: string; real_name: string | null }[]>('/users/options'),
 }
 
 /** 触发浏览器下载 Blob 文件 */
