@@ -97,7 +97,8 @@ def update_dept(db: Session, dept_id: int, data: DeptUpdate, operator: SysUser) 
     updates = data.model_dump(exclude_unset=True)
     if "parent_id" in updates:
         _validate_parent(db, updates["parent_id"], self_id=dept_id)
-    if updates.get("name") in (None, ""):
+    # 部分更新允许不传 name；显式传入为空才拦截
+    if "name" in updates and not str(updates["name"]).strip():
         raise HTTPException(status_code=422, detail="部门名称不能为空")
     for field, value in updates.items():
         setattr(dept, field, value)

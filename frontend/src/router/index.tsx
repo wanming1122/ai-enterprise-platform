@@ -21,6 +21,7 @@ import NL2SQL from '@/views/ai/nl2sql'
 import NL2SQLProduct from '@/views/ai/nl2sql/product'
 import NL2SQLHistory from '@/views/ai/nl2sql/history'
 import AIChat from '@/views/ai/chat'
+import LogList from '@/views/log'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -49,6 +50,7 @@ const viewMap: Record<string, ComponentType> = {
   'views/ai/nl2sql/product/index': NL2SQLProduct,
   'views/ai/nl2sql/history/index': NL2SQLHistory,
   'views/ai/chat/index': AIChat,
+  'views/log/index': LogList,
 }
 
 function renderView(component?: string, name?: string): ReactNode {
