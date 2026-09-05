@@ -11,6 +11,9 @@ import PositionManage from '@/views/org/position'
 import AttendanceRecord from '@/views/attendance/record'
 import AttendanceRule from '@/views/attendance/rule'
 import SalaryManage from '@/views/salary'
+import ProfileInfo from '@/views/profile/info'
+import ProfileSalary from '@/views/profile/salary'
+import ProfileAttendance from '@/views/profile/attendance'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -27,6 +30,9 @@ const viewMap: Record<string, ComponentType> = {
   'views/attendance/record/index': AttendanceRecord,
   'views/attendance/rule/index': AttendanceRule,
   'views/salary/index': SalaryManage,
+  'views/profile/info/index': ProfileInfo,
+  'views/profile/salary/index': ProfileSalary,
+  'views/profile/attendance/index': ProfileAttendance,
   'views/org/role/index': RoleManage,
   'views/org/menu/index': MenuManage,
 }

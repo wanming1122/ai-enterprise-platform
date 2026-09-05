@@ -18,6 +18,8 @@ interface UserState {
   setSession: (data: LoginResult) => void
   /** 启动时用已有令牌恢复用户/菜单/权限 */
   initSession: () => Promise<void>
+  /** 更新本地用户信息（个人资料修改后调用） */
+  updateUserInfo: (user: UserInfo) => void
 }
 
 export const useUserStore = create<UserState>((set) => ({
@@ -76,5 +78,9 @@ export const useUserStore = create<UserState>((set) => ({
       clearTokens()
       set({ token: '', userInfo: null, menus: [], permissions: [], initialized: true })
     }
+  },
+
+  updateUserInfo: (user: UserInfo) => {
+    set({ userInfo: user })
   },
 }))
