@@ -7,6 +7,7 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  RobotOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
@@ -24,6 +25,7 @@ const iconMap: Record<string, ReactNode> = {
   FileTextOutlined: <FileTextOutlined />,
   SettingOutlined: <SettingOutlined />,
   UserOutlined: <UserOutlined />,
+  RobotOutlined: <RobotOutlined />,
 }
 
 /** 授权菜单树 → antd Menu items（目录转子菜单） */

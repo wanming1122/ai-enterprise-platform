@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     JWT_ACCESS_EXPIRE_MINUTES: int = 30
     JWT_REFRESH_EXPIRE_DAYS: int = 7
 
+    # 模型密钥 Fernet 对称加密密钥（ai_model.api_key 加密存储）
+    FERNET_KEY: str = ""
+
     # 存储目录
     MEDIA_DIR: str = "./media"
     CHROMA_DIR: str = "./data/chroma"

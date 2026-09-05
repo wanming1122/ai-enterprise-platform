@@ -1,10 +1,32 @@
-"""AI 智能中心会话模型：ai_conversation 会话表、ai_message 消息表（RAG 与 AI助手共用）。"""
+"""AI 智能中心模型：ai_model 模型配置、ai_conversation 会话、ai_message 消息。"""
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Numeric, SmallInteger, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
+class AIModel(Base):
+    """模型配置表（M4-T1）：生成/向量/重排三类，api_key Fernet 加密存储。"""
+
+    __tablename__ = "ai_model"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, comment="配置名称")
+    model_type: Mapped[str] = mapped_column(String(16), nullable=False, comment="llm/embedding/rerank")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, comment="zhipu/dashscope/openai_compatible/local")
+    base_url: Mapped[str | None] = mapped_column(String(255), comment="API地址，缺省用提供方默认端点")
+    api_key: Mapped[str] = mapped_column(String(255), nullable=False, comment="Fernet 加密后的密钥")
+    model_name: Mapped[str] = mapped_column(String(64), nullable=False, comment="模型标识，如 mimo-v2.5")
+    temperature: Mapped[float | None] = mapped_column(Numeric(3, 2), comment="生成温度（仅 llm）")
+    remark: Mapped[str | None] = mapped_column(String(255), comment="备注")
+    is_default: Mapped[bool] = mapped_column(SmallInteger, default=0, nullable=False, comment="同类型仅一个默认")
+    status: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False, comment="1启用 0停用 2软删除")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )
 
 
 class AIConversation(Base):

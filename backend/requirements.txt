@@ -18,6 +18,9 @@ pyjwt>=2.8
 passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1  # 固定版本，规避 passlib 与 bcrypt>=4.1 的兼容告警
 
+# 模型密钥加密（Fernet 对称加密）
+cryptography>=42.0
+
 # Excel 解析
 pandas>=2.2
 openpyxl>=3.1

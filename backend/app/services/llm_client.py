@@ -1,20 +1,19 @@
-"""生成模型客户端（M3）：MiMo OpenAI 兼容接口，流式/一次性对话。
+"""生成模型客户端（M3，M4-T1 起模型配置优先）：OpenAI 兼容接口，流式/一次性对话。
 
 reasoning_content 为推理型模型的思考增量，与正文分开产出，由调用方决定是否下发。
+模型来源：ai_model 启用的默认生成配置优先，无则回退 .env 的 MIMO_*。
 """
 import json
 
 import httpx
 from fastapi import HTTPException
 
-from app.core.config import settings
+from app.services import ai_model_service
 
 
 def _base() -> tuple[str, str, str]:
-    base, key, model = settings.MIMO_BASE_URL.rstrip("/"), settings.MIMO_API_KEY, settings.MIMO_MODEL
-    if not base or not key:
-        raise HTTPException(status_code=422, detail="未配置生成模型（MIMO_BASE_URL / MIMO_API_KEY）")
-    return base, key, model
+    cfg = ai_model_service.resolve_llm_config()
+    return cfg["base_url"], cfg["api_key"], cfg["model_name"]
 
 
 def chat_stream(messages: list[dict], *, max_tokens: int = 2048, temperature: float = 0.3):

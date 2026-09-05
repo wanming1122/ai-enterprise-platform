@@ -1,6 +1,6 @@
 """RAG 入库与检索核心（M3-T2/T3）：文档解析、清洗切分、Embedding 向量化、Chroma 双写。
 
-- Embedding：智谱 embedding-3（OpenAI 兼容端点，密钥走 .env），维度创建库时锁定
+- Embedding：模型配置页（ai_model）或 .env 兜底，OpenAI 兼容端点，维度创建库时锁定
 - 向量库：Chroma PersistentClient，一库一 collection（kb_{id}），cosine 空间
 - 双写：切片文本与元数据写 MySQL kb_chunk，向量与 metadata 写 Chroma
 """
@@ -23,9 +23,9 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.kb import KBChunk, KBFile, KBKnowledgeBase
 from app.models.user import SysUser
+from app.services import ai_model_service
 from app.services.operation_log_service import write_log
 
-ZHIPU_EMBEDDING_URL = "https://open.bigmodel.cn/api/paas/v4/embeddings"
 EMBED_BATCH_SIZE = 16
 SEPARATORS = ["\n\n", "\n", "。", "；", "，", " "]
 CHROMA_CLIENT = chromadb.PersistentClient(path=settings.CHROMA_DIR)
@@ -33,20 +33,19 @@ CHROMA_CLIENT = chromadb.PersistentClient(path=settings.CHROMA_DIR)
 
 # ---------- Embedding ----------
 
-def _zhipu_embed(texts: list[str], dimensions: int) -> list[list[float]]:
-    """调用智谱 embedding-3，OpenAI 兼容格式，批量分片请求。"""
-    key = settings.ZHIPU_API_KEY
-    if not key:
-        raise HTTPException(status_code=422, detail="未配置 Embedding API 密钥（ZHIPU_API_KEY）")
+def _embed(texts: list[str], dimensions: int, config: dict) -> list[list[float]]:
+    """调用 OpenAI 兼容 embeddings 端点（配置来自模型配置页或 .env 兜底），批量分片请求。"""
+    if not config.get("api_key"):
+        raise HTTPException(status_code=422, detail="未配置向量模型 API 密钥")
     vectors: list[list[float]] = []
     with httpx.Client(timeout=60) as client:
         for i in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = texts[i:i + EMBED_BATCH_SIZE]
             for attempt in range(2):  # 失败重试一次
                 r = client.post(
-                    ZHIPU_EMBEDDING_URL,
-                    headers={"Authorization": f"Bearer {key}"},
-                    json={"model": "embedding-3", "input": batch, "dimensions": dimensions},
+                    f"{config['base_url']}/embeddings",
+                    headers={"Authorization": f"Bearer {config['api_key']}"},
+                    json={"model": config["model_name"], "input": batch, "dimensions": dimensions},
                 )
                 if r.status_code == 200:
                     data = sorted(r.json()["data"], key=lambda x: x["index"])
@@ -57,13 +56,17 @@ def _zhipu_embed(texts: list[str], dimensions: int) -> list[list[float]]:
     return vectors
 
 
-def probe_embedding_dimension(model: str = "embedding-3") -> int:
+def probe_embedding_dimension(config: dict | None = None) -> int:
     """创建知识库时探测向量维度（探针一次，写入 kb 表后锁定）。"""
-    return len(_zhipu_embed(["维度探针"], 1024)[0])
+    config = config or ai_model_service.resolve_embedding_config()
+    return len(_embed(["维度探针"], 1024, config)[0])
 
 
-def embed_texts(texts: list[str], dimensions: int) -> list[list[float]]:
-    return _zhipu_embed(texts, dimensions)
+def embed_texts(texts: list[str], dimensions: int, *, model_name: str | None = None,
+                db: Session | None = None) -> list[list[float]]:
+    """按模型配置向量化：优先匹配 model_name 的启用配置，其次类型默认，再退 .env。"""
+    config = ai_model_service.resolve_embedding_config(db=db, model_name=model_name)
+    return _embed(texts, dimensions, config)
 
 
 # ---------- 解析与切分 ----------
@@ -289,7 +292,7 @@ def upsert_vectors(kb: KBKnowledgeBase, chunks: list[dict]) -> None:
     if not chunks:
         return
     collection = _get_collection(kb)
-    vectors = embed_texts([c["content"] for c in chunks], kb.embedding_dimension)
+    vectors = embed_texts([c["content"] for c in chunks], kb.embedding_dimension, model_name=kb.embedding_model)
     ids = [f"f{c['file_id']}c{c['chunk_index']}" for c in chunks]
     documents = [c["content"] for c in chunks]
     metadatas = [
@@ -327,7 +330,7 @@ def retrieve(db: Session, *, query: str, kb_ids: list[int], top_k: int = 6) -> l
         collection = _get_collection(kb, create=False)
         if collection is None:
             continue
-        qv = embed_texts([query], kb.embedding_dimension)[0]
+        qv = embed_texts([query], kb.embedding_dimension, model_name=kb.embedding_model, db=db)[0]
         res = collection.query(
             query_embeddings=[qv], n_results=top_k,
             where={"status": "active"},

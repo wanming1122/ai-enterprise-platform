@@ -16,6 +16,7 @@ import ProfileSalary from '@/views/profile/salary'
 import ProfileAttendance from '@/views/profile/attendance'
 import KBManage from '@/views/ai/kb'
 import KBChat from '@/views/ai/kb/chat'
+import ModelConfig from '@/views/ai/model'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -39,6 +40,7 @@ const viewMap: Record<string, ComponentType> = {
   'views/org/menu/index': MenuManage,
   'views/ai/kb/index': KBManage,
   'views/ai/kb/chat/index': KBChat,
+  'views/ai/model/index': ModelConfig,
 }
 
 function renderView(component?: string, name?: string): ReactNode {

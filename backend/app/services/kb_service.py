@@ -104,15 +104,16 @@ def create_kb(db: Session, data: KBCreate, operator: SysUser) -> dict:
     if data.chunk_size < 100 or data.chunk_overlap < 0 or data.chunk_overlap >= data.chunk_size:
         raise HTTPException(status_code=422, detail="切分参数不合法：chunk_size≥100 且 0≤overlap<size")
 
-    embedding_model = settings.MIMO_EMBEDDING_MODEL
+    # 创建时锁定向量模型与维度：取启用的默认向量配置（无则 .env 兜底），名称以实际调用为准
+    from app.services.ai_model_service import resolve_embedding_config
+    from app.services.kb_rag_service import probe_embedding_dimension
+
+    embedding_config = resolve_embedding_config(db)
+    embedding_model = embedding_config["model_name"]
     dimension = data.embedding_dimension
     if dimension is None:
-        # 创建时锁定维度：优先显式指定，其次探测（探测实现在 M3-T2 kb_rag_service）
         try:
-            from app.services.kb_rag_service import probe_embedding_dimension
-            dimension = probe_embedding_dimension(embedding_model)
-        except ImportError:
-            dimension = None
+            dimension = probe_embedding_dimension(embedding_config)
         except HTTPException:
             raise
         if dimension is None:
