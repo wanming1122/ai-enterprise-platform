@@ -22,3 +22,5 @@ frontend/dist/
 .vscode/
 Thumbs.db
 .DS_Store
+# 本地工具
+.zcode/
