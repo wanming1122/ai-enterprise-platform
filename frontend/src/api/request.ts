@@ -38,7 +38,8 @@ const raw = axios.create({
 /** 刷新令牌单例：并发 401 只触发一次刷新 */
 let refreshPromise: Promise<string> | null = null
 
-async function refreshAccessToken(): Promise<string> {
+/** 刷新访问令牌：axios 拦截器与 SSE fetch（streamKBChat）共用 */
+export async function refreshAccessToken(): Promise<string> {
   if (!refreshPromise) {
     refreshPromise = (async () => {
       const refreshToken = getRefreshToken()
