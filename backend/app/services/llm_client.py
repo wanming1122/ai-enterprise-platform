@@ -71,3 +71,35 @@ def chat_once(messages: list[dict], *, max_tokens: int = 512, temperature: float
             raise HTTPException(status_code=422, detail=f"生成模型调用失败：{r.text[:200]}")
         message = r.json()["choices"][0]["message"]
         return (message.get("content") or "").strip()
+
+
+def chat_with_tools(
+    messages: list[dict], tools: list[dict], *, max_tokens: int = 2048, temperature: float = 0.2
+) -> dict:
+    """带工具定义的一次性对话：返回 OpenAI 格式 message dict。
+
+    推理型模型回放 tool_calls 时必须携带 reasoning_content（否则接口报错），调用方把
+    本函数返回的 dict 原样放回 messages 即可满足；tool_calls 结构原样透传。
+    """
+    base, key, model = _base()
+    with httpx.Client(timeout=httpx.Timeout(10, read=180)) as client:
+        r = client.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={
+                "model": model,
+                "messages": messages,
+                "tools": tools,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            },
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=422, detail=f"生成模型调用失败：{r.text[:200]}")
+        message = r.json()["choices"][0]["message"]
+        out: dict = {"role": "assistant", "content": message.get("content") or ""}
+        if message.get("reasoning_content"):
+            out["reasoning_content"] = message["reasoning_content"]
+        if message.get("tool_calls"):
+            out["tool_calls"] = message["tool_calls"]
+        return out

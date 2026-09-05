@@ -153,8 +153,8 @@ export interface ChatStreamHandlers {
   onError?: (message: string) => void
 }
 
-/** 解析单个 SSE 事件块（event: xxx + data: xxx） */
-function parseSSEBlock(block: string): { event: string; data: string } | null {
+/** 解析单个 SSE 事件块（event: xxx + data: xxx）；AI助手流式接口复用 */
+export function parseSSEBlock(block: string): { event: string; data: string } | null {
   let event = 'message'
   const dataLines: string[] = []
   for (const line of block.split('\n')) {

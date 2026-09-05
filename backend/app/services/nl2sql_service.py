@@ -175,6 +175,11 @@ def _run_readonly(sql: str) -> tuple[list[dict], int]:
     return rows, int((time.perf_counter() - start) * 1000)
 
 
+def execute_readonly(sql: str) -> tuple[list[dict], int]:
+    """只读执行的公开入口（AI助手 nl2sql 工具复用）。"""
+    return _run_readonly(sql)
+
+
 # ---------- 记录业务 ----------
 
 def _get_record(db: Session, record_id: int) -> NL2SQLRecord:

@@ -115,7 +115,7 @@ def chat_sse(user_id: int, username: str, *, question: str, kb_ids: list[int],
             if conv is None or conv.user_id != user_id:
                 raise HTTPException(status_code=404, detail="会话不存在")
         else:
-            conv = AIConversation(user_id=user_id, title=question[:32])
+            conv = AIConversation(user_id=user_id, title=question[:32], source="kb")
             db.add(conv)
             db.flush()
 
@@ -182,7 +182,9 @@ def chat_sse(user_id: int, username: str, *, question: str, kb_ids: list[int],
 
 
 def list_conversations(db: Session, user: SysUser, *, page: int = 1, page_size: int = 20):
-    q = select(AIConversation).where(AIConversation.user_id == user.id)
+    q = select(AIConversation).where(
+        AIConversation.user_id == user.id, AIConversation.source != "ai"  # 排除 AI助手会话
+    )
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
     convs = db.scalars(q.order_by(AIConversation.updated_at.desc())
                        .offset((page - 1) * page_size).limit(page_size)).all()

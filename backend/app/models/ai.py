@@ -2,6 +2,7 @@
 from datetime import datetime
 
 from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Numeric, SmallInteger, String, Text
+from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -35,6 +36,8 @@ class AIConversation(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sys_user.id"), nullable=False, comment="归属用户")
     title: Mapped[str | None] = mapped_column(String(64), comment="会话标题（取首问）")
+    status: Mapped[int] = mapped_column(TINYINT, default=1, nullable=False, comment="1正常 2软删除")
+    source: Mapped[str] = mapped_column(String(16), default="kb", nullable=False, comment="会话来源：kb问答调试 / ai AI助手")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
@@ -50,6 +53,7 @@ class AIMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False, comment="user/assistant/tool")
     content: Mapped[str] = mapped_column(Text, nullable=False, comment="消息内容")
+    reasoning_content: Mapped[str | None] = mapped_column(Text, comment="深度思考过程（推理模型）")
     tool_name: Mapped[str | None] = mapped_column(String(32), comment="工具名（AI助手用）")
     citations: Mapped[list | None] = mapped_column(JSON, comment="引用来源列表")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
