@@ -4,6 +4,7 @@ from app.models.department import SysDepartment
 from app.models.position import SysPosition
 from app.models.attendance import AttRecord, AttRule
 from app.models.salary import SalPayroll, SalAdjustment
+from app.models.kb import KBKnowledgeBase, KBFile, KBChunk
 from app.models.role import SysRole
 from app.models.user_role_relation import SysUserRoleRelation
 from app.models.menu import SysMenu
@@ -25,6 +26,9 @@ __all__ = [
     "AttRule",
     "SalPayroll",
     "SalAdjustment",
+    "KBKnowledgeBase",
+    "KBFile",
+    "KBChunk",
     "SysRole",
     "SysUserRoleRelation",
     "SysMenu",

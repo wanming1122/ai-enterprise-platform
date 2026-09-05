@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.routers import auth, attendance, department, menu, permission, position, profile, role, salary, user
+from app.routers import auth, attendance, department, kb, menu, permission, position, profile, role, salary, user
 from app.utils.response import error, ok
 
 app = FastAPI(
@@ -68,6 +68,7 @@ app.include_router(attendance.router)
 app.include_router(attendance.rule_router)
 app.include_router(salary.router)
 app.include_router(profile.router)
+app.include_router(kb.router)
 
 @app.get("/api/v1/health", tags=["系统"])
 def health():

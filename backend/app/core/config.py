@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     ZHIPU_API_KEY: str = ""
     MIMO_BASE_URL: str = ""
     MIMO_API_KEY: str = ""
+    MIMO_MODEL: str = "MiMo-V2.5"          # 生成模型（OpenAI兼容 chat）
+    MIMO_EMBEDDING_MODEL: str = "text-embedding-v3"  # 向量模型（MiMo官方无embeddings时由服务商提供）
 
     @property
     def database_url(self) -> str:
