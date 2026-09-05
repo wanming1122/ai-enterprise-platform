@@ -1,15 +1,12 @@
-"""知识库路由（M3-T1）：库 CRUD/软删、文件上传/列表/详情/软删/切片预览。
-
-检索与问答接口在 M3-T3 增加。
-"""
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+"""知识库路由：库 CRUD/软删/重建、文件上传/列表/详情/软删/重解析/切片预览。检索问答接口在 T3 增加。"""
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.deps import require_permissions
 from app.db.session import get_db
 from app.models.user import SysUser
 from app.schemas.kb import KBCreate, KBUpdate
-from app.services import kb_service
+from app.services import kb_rag_service, kb_service
 from app.utils.page import page_result
 from app.utils.response import ok
 
@@ -66,21 +63,37 @@ def delete_kb(
     operator: SysUser = Depends(require_permissions("kb:delete")),
     db: Session = Depends(get_db),
 ):
-    """软删除知识库及其下全部文件。"""
+    """软删除知识库及其下全部文件（同步移除 Chroma collection）。"""
+    kb = kb_service.get_kb(db, kb_id)
     kb_service.delete_kb(db, kb_id, operator)
+    kb_rag_service.drop_kb_collection(kb)
     return ok(message="删除成功")
+
+
+@router.post("/bases/{kb_id}/rebuild")
+def rebuild_kb(
+    kb_id: int,
+    operator: SysUser = Depends(require_permissions("kb:update")),
+    db: Session = Depends(get_db),
+):
+    """重建向量索引：删除并重建 collection 后从 MySQL 切片全量重嵌入。"""
+    kb = kb_service.get_kb(db, kb_id)
+    return ok(kb_rag_service.rebuild_kb_vectors(db, kb, operator), message="重建完成")
 
 
 @router.post("/bases/{kb_id}/files")
 def upload_file(
     kb_id: int,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     operator: SysUser = Depends(require_permissions("file:upload")),
     db: Session = Depends(get_db),
 ):
-    """上传文件到知识库（校验后落盘待解析，M3-T2 接管解析入库）。"""
+    """上传文件到知识库：校验落盘后异步解析入库。"""
     kb = kb_service.get_kb(db, kb_id)
-    return ok(kb_service.upload_file(db, kb, file, operator), message="上传成功")
+    data = kb_service.upload_file(db, kb, file, operator)
+    background_tasks.add_task(kb_rag_service.process_file, data["id"])
+    return ok(data, message="上传成功，解析中")
 
 
 @router.get("/bases/{kb_id}/files")
@@ -127,5 +140,26 @@ def delete_file(
     db: Session = Depends(get_db),
 ):
     """软删除文件（MySQL 与 Chroma 双侧标记）。"""
+    kb_file = kb_service.get_file(db, file_id)
+    kb = kb_service.get_kb(db, kb_file.kb_id)
     kb_service.delete_file(db, file_id, operator)
+    kb_rag_service.remove_file_vectors(kb, file_id)
     return ok(message="删除成功")
+
+
+@router.post("/files/{file_id}/reparse")
+def reparse_file(
+    file_id: int,
+    background_tasks: BackgroundTasks,
+    operator: SysUser = Depends(require_permissions("file:reparse")),
+    db: Session = Depends(get_db),
+):
+    """重新解析：清空原切片后重跑入库链路。"""
+    kb_file = kb_service.get_file(db, file_id)
+    if kb_file.parse_status == 1:
+        raise HTTPException(status_code=422, detail="文件正在解析中，请稍后再试")
+    kb_file.parse_status = 0
+    kb_file.fail_reason = None
+    db.commit()
+    background_tasks.add_task(kb_rag_service.process_file, file_id)
+    return ok(message="已加入解析队列")
