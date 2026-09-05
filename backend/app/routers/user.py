@@ -3,6 +3,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_permissions
@@ -24,6 +25,16 @@ def _xlsx_response(content: bytes, filename: str) -> Response:
         media_type=XLSX_MEDIA,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
+
+
+@router.get("/options")
+def user_options(
+    _: SysUser = Depends(require_permissions("dept:list")),
+    db: Session = Depends(get_db),
+):
+    """启用用户列表（供部门负责人等下拉选择）。"""
+    users = db.scalars(select(SysUser).where(SysUser.status == 1).order_by(SysUser.id)).all()
+    return ok([{"id": u.id, "username": u.username, "real_name": u.real_name} for u in users])
 
 
 @router.get("/template")
