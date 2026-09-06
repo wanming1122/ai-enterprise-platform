@@ -17,6 +17,8 @@ import {
 import { PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
+import MarkdownText from '@/components/MarkdownText'
+import ThinkingIndicator from '@/components/ThinkingIndicator'
 import {
   kbApi,
   streamKBChat,
@@ -303,12 +305,12 @@ export default function KBChat() {
               ]}
             />
           )}
-          {(m.content || m.streaming) && (
-            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.7 }}>
-              {m.content}
-              {m.streaming ? '▍' : ''}
-            </div>
-          )}
+          {m.content ? (
+            // 流式中把光标字符拼进正文末尾，保证跟随最后一个段落行内显示
+            <MarkdownText content={m.streaming ? `${m.content}▍` : m.content} />
+          ) : m.streaming ? (
+            <ThinkingIndicator />
+          ) : null}
           {m.stopped && <Typography.Text type="secondary" style={{ fontSize: 12 }}>已停止生成</Typography.Text>}
           {m.citations && m.citations.length > 0 && renderCitations(m.citations)}
         </div>

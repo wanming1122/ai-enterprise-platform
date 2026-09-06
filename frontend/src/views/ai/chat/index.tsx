@@ -27,6 +27,8 @@ import {
   type AIToolEvent,
 } from '@/api/aiChat'
 import type { Citation } from '@/api/kb'
+import MarkdownText from '@/components/MarkdownText'
+import ThinkingIndicator from '@/components/ThinkingIndicator'
 import { useUserStore } from '@/stores/user'
 
 const fmtTime = (v: string | null | undefined) => (v ? v.slice(0, 19).replace('T', ' ') : '')
@@ -321,10 +323,12 @@ export default function AIChat() {
               ]}
             />
           )}
-          <div>
-            {m.content}
-            {m.streaming && '▍'}
-          </div>
+          {m.content ? (
+            // 流式中把光标字符拼进正文末尾，保证跟随最后一个段落行内显示
+            <MarkdownText content={m.streaming ? `${m.content}▍` : m.content} />
+          ) : m.streaming ? (
+            <ThinkingIndicator />
+          ) : null}
           {m.stopped && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               已停止生成
