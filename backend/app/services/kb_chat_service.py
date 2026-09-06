@@ -11,7 +11,7 @@ from app.models.kb import KBKnowledgeBase
 from app.models.user import SysUser
 from app.db.session import SessionLocal
 from app.services import kb_rag_service
-from app.services.kb_rag_service import retrieve
+from app.services.kb_rag_service import retrieve_with_crag
 from app.services.llm_client import chat_once, chat_stream
 from app.services.operation_log_service import write_log
 
@@ -125,7 +125,9 @@ def chat_sse(user_id: int, username: str, *, question: str, kb_ids: list[int],
             .order_by(AIMessage.id.desc()).limit(HISTORY_ROUNDS * 2)
         ).all()[::-1]
         search_query = _rewrite_query(question, history)
-        results = retrieve(db, query=search_query, kb_ids=kb_ids, top_k=top_k)
+        results, used_query = retrieve_with_crag(db, query=search_query, kb_ids=kb_ids, top_k=top_k)
+        if used_query != search_query:
+            search_query = used_query  # CRAG 校正后实际生效的检索词
         citations = _build_citations(results)
 
         # 3. 持久化用户消息

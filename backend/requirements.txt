@@ -35,5 +35,8 @@ langgraph>=0.2
 langchain-core>=0.3
 langchain-openai>=0.2
 
+# RAG 二期：BM25 混合检索中文分词
+jieba>=0.42
+
 # HTTP 客户端
 httpx>=0.27

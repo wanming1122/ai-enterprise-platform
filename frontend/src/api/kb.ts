@@ -64,7 +64,8 @@ export interface SearchHit {
   title_path: string | null
   page: number | null
   chunk_type: string
-  similarity: number
+  /** 混合检索：重排后为相关性分；BM25 独有候选未经重排为 null */
+  similarity: number | null
 }
 
 /** 问答会话 */

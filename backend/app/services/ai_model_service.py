@@ -227,6 +227,28 @@ def get_default_config(model_type: str) -> dict | None:
         db.close()
 
 
+def resolve_rerank_config(db: Session | None = None, model_name: str | None = None) -> dict | None:
+    """重排模型配置（RAG 二期）：类型默认 → 按模型名匹配；未配置返回 None（检索跳过重排）。
+
+    端点约定 OpenAI 生态常见的 /rerank（Cohere/Jina 风格）：POST {model, query, documents}。
+    """
+    owned = db is None
+    db = db or SessionLocal()
+    try:
+        m: AIModel | None = None
+        if model_name:
+            m = db.scalar(
+                select(AIModel).where(AIModel.model_type == "rerank", AIModel.model_name == model_name,
+                                      AIModel.status == 1)
+            )
+        if m is None:
+            m = _enabled_default(db, "rerank")
+        return _config_of(m) if m else None
+    finally:
+        if owned:
+            db.close()
+
+
 def resolve_llm_config() -> dict:
     """生成模型配置：DB 默认优先，回退 .env（MIMO_*）。"""
     cfg = get_default_config("llm")

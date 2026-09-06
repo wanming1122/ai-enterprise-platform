@@ -203,7 +203,7 @@ def _tool_retrieve(db: Session, query: str) -> tuple[str, list[dict]]:
         return "当前没有启用的知识库，无法检索。请基于已有知识回答，并说明未检索到资料。", []
     if not query:
         return "检索词为空，请提供具体问题。", []
-    results = kb_rag_service.retrieve(db, query=query, kb_ids=kb_ids, top_k=6)
+    results, _ = kb_rag_service.retrieve_with_crag(db, query=query, kb_ids=kb_ids, top_k=6)
     if not results:
         return "知识库中未检索到相关资料。请如实告知用户未找到依据。", []
     return f"已检索到 {len(results)} 条相关资料（文件/标题/页码/正文），已注入生成上下文。", results

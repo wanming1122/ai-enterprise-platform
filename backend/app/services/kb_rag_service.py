@@ -1,9 +1,12 @@
-"""RAG 入库与检索核心（M3-T2/T3）：文档解析、清洗切分、Embedding 向量化、Chroma 双写。
+"""RAG 入库与检索核心（M3-T2/T3 + M6 二期/三期）：解析切分、向量化、混合检索、重排、CRAG。
 
 - Embedding：模型配置页（ai_model）或 .env 兜底，OpenAI 兼容端点，维度创建库时锁定
 - 向量库：Chroma PersistentClient，一库一 collection（kb_{id}），cosine 空间
 - 双写：切片文本与元数据写 MySQL kb_chunk，向量与 metadata 写 Chroma
+- 检索二期：向量 + BM25（jieba）双路粗排 → RRF 融合 → rerank 模型精排（未配置则按融合序）
+- 检索三期：CRAG 简化版——LLM 相关性分级，不足则改写查询重检一轮
 """
+import math
 import re
 import uuid
 from datetime import datetime
@@ -11,19 +14,20 @@ from pathlib import Path
 
 import chromadb
 import httpx
+import jieba
 import pdfplumber
 from docx import Document as DocxDocument
 from docx.table import Table as DocxTable
 from docx.text.paragraph import Paragraph as DocxParagraph
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.kb import KBChunk, KBFile, KBKnowledgeBase
 from app.models.user import SysUser
-from app.services import ai_model_service
+from app.services import ai_model_service, llm_client
 from app.services.operation_log_service import write_log
 
 EMBED_BATCH_SIZE = 16
@@ -317,27 +321,167 @@ def remove_file_vectors(kb: KBKnowledgeBase, file_id: int) -> None:
         collection.delete(where={"file_id": file_id})
 
 
+# ---------- 检索（二期混合检索 + 重排；三期 CRAG） ----------
+
+HYBRID_CANDIDATES = 20   # 粗排：向量与 BM25 各取候选数（设计稿：粗排 top 20）
+RRF_K = 60               # RRF 融合常数（业界常用 60）
+RERANK_MIN_SCORE = 0.2   # 重排相关性分阈值，低于丢弃（宁少勿滥）
+BM25_K1 = 1.5            # BM25 词频饱和参数
+BM25_B = 0.75            # BM25 长度归一化参数
+BM25_CORPUS_CAP = 5000   # BM25 语料切片上限（演示规模内全量，超出按 id 截断）
+_bm25_cache: dict = {}   # BM25 语料缓存：{frozenset(kb_ids): {"size": n, "max_id": m, "docs": [...]}}
+
+
+def _tokenize(text: str) -> list[str]:
+    """检索分词：jieba 中文切词 + 小写化；保留长度≥2的词与纯字母数字短词。"""
+    out: list[str] = []
+    for tok in jieba.lcut(text.lower()):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if re.fullmatch(r"[a-z0-9@.]+", tok) or len(tok) >= 2:
+            out.append(tok)
+    return out
+
+
+def _bm25_corpus(db: Session, kb_ids: list[int]) -> list[dict]:
+    """BM25 语料：有效知识库的有效切片（MySQL 侧），按切片总量与新切片 id 变化失效缓存。"""
+    key = frozenset(kb_ids)
+    row = db.execute(
+        select(func.count(), func.coalesce(func.max(KBChunk.id), 0))
+        .join(KBFile, KBFile.id == KBChunk.file_id)
+        .where(KBChunk.kb_id.in_(kb_ids), KBChunk.status != 2, KBFile.status != 2)
+    ).one()
+    total, max_id = int(row[0] or 0), int(row[1] or 0)
+    cached = _bm25_cache.get(key)
+    if cached and cached["size"] == total and cached["max_id"] == max_id:
+        return cached["docs"]
+    chunks = db.scalars(
+        select(KBChunk).join(KBFile, KBFile.id == KBChunk.file_id)
+        .where(KBChunk.kb_id.in_(kb_ids), KBChunk.status != 2, KBFile.status != 2)
+        .order_by(KBChunk.id).limit(BM25_CORPUS_CAP)
+    ).all()
+    docs = [
+        {
+            "kb_id": c.kb_id, "file_id": c.file_id, "chunk_index": c.chunk_index,
+            "content": c.content, "title_path": c.title_path, "page": c.page,
+            "chunk_type": c.chunk_type, "tokens": _tokenize(c.content),
+        }
+        for c in chunks
+    ]
+    _bm25_cache[key] = {"size": total, "max_id": max_id, "docs": docs}
+    return docs
+
+
+def _bm25_search(query_tokens: list[str], docs: list[dict], top_n: int) -> list[dict]:
+    """经典 BM25（Okapi）打分，返回前 top_n 候选（带 bm25_score）。"""
+    if not query_tokens or not docs:
+        return []
+    avgdl = sum(len(d["tokens"]) for d in docs) / len(docs) or 1.0
+    df: dict[str, int] = {}
+    for d in docs:
+        for t in set(d["tokens"]):
+            df[t] = df.get(t, 0) + 1
+    scored: list[tuple[float, dict]] = []
+    for d in docs:
+        tf: dict[str, int] = {}
+        for t in d["tokens"]:
+            tf[t] = tf.get(t, 0) + 1
+        dl = len(d["tokens"]) or 1
+        score = 0.0
+        for t in query_tokens:
+            freq = tf.get(t)
+            if not freq or t not in df:
+                continue
+            idf = math.log(1 + (len(docs) - df[t] + 0.5) / (df[t] + 0.5))
+            score += idf * freq * (BM25_K1 + 1) / (freq + BM25_K1 * (1 - BM25_B + BM25_B * dl / avgdl))
+        if score > 0:
+            scored.append((score, d))
+    scored.sort(key=lambda x: -x[0])
+    return [
+        {
+            "kb_id": d["kb_id"], "file_id": d["file_id"], "chunk_index": d["chunk_index"],
+            "content": d["content"], "title_path": d["title_path"], "page": d["page"],
+            "chunk_type": d["chunk_type"], "bm25_score": round(score, 4),
+        }
+        for score, d in scored[:top_n]
+    ]
+
+
+def _rrf_merge(vector_results: list[dict], bm25_results: list[dict], top_n: int) -> list[dict]:
+    """Reciprocal Rank Fusion：按 (kb_id, file_id, chunk_index) 归并双路排名。"""
+    def key(r: dict) -> tuple:
+        return (r["kb_id"], r["file_id"], r["chunk_index"])
+
+    fused: dict[tuple, dict] = {}
+    for rank, r in enumerate(vector_results, start=1):
+        entry = fused.setdefault(key(r), {**r, "rrf": 0.0})
+        entry["rrf"] += 1.0 / (RRF_K + rank)
+    for rank, r in enumerate(bm25_results, start=1):
+        entry = fused.get(key(r))
+        if entry is not None:
+            entry["rrf"] += 1.0 / (RRF_K + rank)
+        else:
+            fused[key(r)] = {**r, "similarity": None, "rrf": 1.0 / (RRF_K + rank)}
+    return sorted(fused.values(), key=lambda x: -x["rrf"])[:top_n]
+
+
+def _rerank(db: Session, query: str, candidates: list[dict]) -> list[dict] | None:
+    """重排精排：调用默认 rerank 模型的 /rerank 端点（Cohere/Jina 风格）。
+
+    未配置重排模型或调用失败返回 None，调用方按融合序降级（不阻塞检索）。
+    """
+    cfg = ai_model_service.resolve_rerank_config(db=db)
+    if not cfg or not cfg.get("api_key"):
+        return None
+    try:
+        with httpx.Client(timeout=30) as client:
+            r = client.post(
+                f"{cfg['base_url']}/rerank",
+                headers={"Authorization": f"Bearer {cfg['api_key']}"},
+                json={
+                    "model": cfg["model_name"], "query": query,
+                    "documents": [c["content"][:2000] for c in candidates],
+                    "top_n": len(candidates),
+                },
+            )
+        if r.status_code != 200:
+            return None
+        ranked: list[dict] = []
+        for item in sorted(r.json().get("results", []), key=lambda x: -x.get("relevance_score", 0)):
+            idx = item.get("index")
+            if isinstance(idx, int) and 0 <= idx < len(candidates):
+                ranked.append({**candidates[idx], "similarity": round(float(item.get("relevance_score", 0)), 4)})
+        return ranked
+    except Exception:
+        return None
+
+
 def retrieve(db: Session, *, query: str, kb_ids: list[int], top_k: int = 6) -> list[dict]:
-    """跨库向量检索：按库各自的维度生成查询向量，过滤软删，按相似度合并排序。"""
+    """混合检索：向量 + BM25 双路粗排 → RRF 融合 → 重排精排（未配置重排模型时按融合序取）。
+
+    相似度字段语义：重排后为 rerank 相关性分；未重排时为向量余弦相似度，BM25 独有候选为 None。
+    """
     kbs = db.scalars(
         select(KBKnowledgeBase).where(KBKnowledgeBase.id.in_(kb_ids), KBKnowledgeBase.status != 2)
     ).all()
     if not kbs:
         raise HTTPException(status_code=422, detail="知识库不存在或已删除")
 
-    results: list[dict] = []
+    # 1) 向量粗排
+    vector_results: list[dict] = []
     for kb in kbs:
         collection = _get_collection(kb, create=False)
         if collection is None:
             continue
         qv = embed_texts([query], kb.embedding_dimension, model_name=kb.embedding_model, db=db)[0]
         res = collection.query(
-            query_embeddings=[qv], n_results=top_k,
+            query_embeddings=[qv], n_results=HYBRID_CANDIDATES,
             where={"status": "active"},
             include=["documents", "metadatas", "distances"],
         )
         for doc, meta, dist in zip(res["documents"][0], res["metadatas"][0], res["distances"][0]):
-            results.append({
+            vector_results.append({
                 "kb_id": kb.id, "kb_name": kb.name,
                 "file_id": meta.get("file_id"), "chunk_index": meta.get("chunk_index"),
                 "content": doc,
@@ -347,20 +491,95 @@ def retrieve(db: Session, *, query: str, kb_ids: list[int], top_k: int = 6) -> l
                 "similarity": round(max(0.0, 1.0 - dist), 4),  # cosine 距离转相似度
             })
 
-    # MySQL 侧兜底过滤（文件软删即不可引用）
-    file_ids = {r["file_id"] for r in results if r["file_id"]}
+    # 2) MySQL 侧兜底过滤（文件软删即不可引用）+ BM25 粗排
+    file_ids = {r["file_id"] for r in vector_results if r["file_id"]}
     valid = set(
         db.scalars(select(KBFile.id).where(KBFile.id.in_(file_ids), KBFile.status != 2)).all()
     ) if file_ids else set()
-    results = [r for r in results if r["file_id"] in valid]
+    vector_results = [r for r in vector_results if r["file_id"] in valid]
+    bm25_results = _bm25_search(_tokenize(query), _bm25_corpus(db, kb_ids), HYBRID_CANDIDATES)
 
+    # 3) RRF 融合 → 重排精排
+    candidates = _rrf_merge(vector_results, bm25_results, HYBRID_CANDIDATES)
+    ranked = _rerank(db, query, candidates)
+    if ranked is not None:
+        candidates = [r for r in ranked if r["similarity"] >= RERANK_MIN_SCORE]
+
+    # 4) 补齐名称与软删过滤（覆盖 BM25 独有候选）
+    kb_names = {kb.id: kb.name for kb in kbs}
+    cand_file_ids = {r["file_id"] for r in candidates if r["file_id"]}
+    valid_files = set(
+        db.scalars(select(KBFile.id).where(KBFile.id.in_(cand_file_ids), KBFile.status != 2)).all()
+    ) if cand_file_ids else set()
     file_names = dict(
-        db.execute(select(KBFile.id, KBFile.file_name).where(KBFile.id.in_(file_ids))).all()
-    ) if file_ids else {}
-    for r in results:
+        db.execute(select(KBFile.id, KBFile.file_name).where(KBFile.id.in_(cand_file_ids))).all()
+    ) if cand_file_ids else {}
+    results: list[dict] = []
+    for r in candidates:
+        if r["file_id"] not in valid_files:
+            continue
+        r["kb_name"] = kb_names.get(r["kb_id"], "")
         r["file_name"] = file_names.get(r["file_id"], "")
-    results.sort(key=lambda x: -x["similarity"])
+        results.append(r)
     return results[:top_k]
+
+
+GRADE_PROMPT = (
+    "判断以下检索资料能否回答用户问题。只回答两个词之一：充分 或 不足。\n\n"
+    "用户问题：{q}\n\n检索资料：\n{ctx}"
+)
+REWRITE_FOR_RETRIEVE_PROMPT = (
+    "以下检索资料与用户问题不匹配，请生成一个新的检索查询（不超过30字），"
+    "调整措辞与关键词以便命中相关资料。只输出查询本身。\n\n用户问题：{q}\n\n已检索资料摘要：\n{ctx}"
+)
+
+
+def _grade_sufficient(query: str, results: list[dict]) -> bool:
+    """LLM 相关性分级：资料足以回答返回 True；模型异常时放行，不阻塞问答。"""
+    if not results:
+        return False
+    ctx = "\n".join(f"[{i + 1}] {r['content'][:200]}" for i, r in enumerate(results))
+    try:
+        answer = llm_client.chat_once(
+            [{"role": "user", "content": GRADE_PROMPT.format(q=query, ctx=ctx[:2400])}],
+            max_tokens=8, temperature=0,
+        )
+    except HTTPException:
+        return True
+    return "充分" in answer and "不足" not in answer
+
+
+def _rewrite_retrieval_query(query: str, results: list[dict]) -> str | None:
+    """CRAG 检索校正：基于未命中的资料摘要改写查询；失败返回 None。"""
+    ctx = "\n".join(f"[{i + 1}] {r['content'][:120]}" for i, r in enumerate(results))
+    try:
+        rewritten = llm_client.chat_once(
+            [{"role": "user", "content": REWRITE_FOR_RETRIEVE_PROMPT.format(q=query, ctx=ctx[:1500])}],
+            max_tokens=64, temperature=0.2,
+        )
+    except HTTPException:
+        return None
+    rewritten = rewritten.strip().strip('"“”').replace("\n", " ")
+    return rewritten[:60] or None
+
+
+def retrieve_with_crag(db: Session, *, query: str, kb_ids: list[int], top_k: int = 6,
+                       max_rounds: int = 2) -> tuple[list[dict], str]:
+    """CRAG 简化版（RAG 三期）：检索 → LLM 分级 → 不足则改写查询重检，最多 max_rounds 轮。
+
+    返回 (最终结果, 实际使用的检索查询)；分级或重写失败时静默保留上一轮结果。
+    """
+    used_query = query
+    results = retrieve(db, query=used_query, kb_ids=kb_ids, top_k=top_k)
+    for _ in range(max_rounds - 1):
+        if _grade_sufficient(used_query, results):
+            break
+        rewritten = _rewrite_retrieval_query(used_query, results)
+        if not rewritten or rewritten == used_query:
+            break
+        used_query = rewritten
+        results = retrieve(db, query=used_query, kb_ids=kb_ids, top_k=top_k)
+    return results, used_query
 
 
 def drop_kb_collection(kb: KBKnowledgeBase) -> None:

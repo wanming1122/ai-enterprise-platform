@@ -329,7 +329,7 @@ export default function KBChat() {
       render: (v: string | null) => v || '-',
     },
     { title: '页码', dataIndex: 'page', width: 65, render: (v: number | null) => (v == null ? '-' : v) },
-    { title: '相似度', dataIndex: 'similarity', width: 80, render: (v: number) => v.toFixed(4) },
+    { title: '相似度', dataIndex: 'similarity', width: 80, render: (v: number | null) => (v == null ? '-' : v.toFixed(4)) },
     {
       title: '切片内容',
       dataIndex: 'content',
