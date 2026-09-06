@@ -24,3 +24,4 @@ Thumbs.db
 .DS_Store
 # 本地工具
 .zcode/
+.pytest_cache/

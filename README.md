@@ -77,6 +77,17 @@ api_key 经 Fernet 对称加密入库（密钥为 .env 的 `FERNET_KEY`，生成
 
 > 数据库初始化说明：全量表结构均由 Alembic 迁移管理（`alembic upgrade head` 一键构建），无手工 SQL 脚本；降级可 `alembic downgrade <revision>`。
 
+## 自动化测试
+
+```bash
+cd backend
+.venv/Scripts/pip.exe install -r requirements-dev.txt   # 安装 pytest（仅需一次）
+.venv/Scripts/python.exe -m pytest tests/ -v
+```
+
+覆盖四条核心链路共 36 个用例：NL2SQL 安全校验（只读/限表/限行/防注入）、登录认证（限流锁定/刷新轮换/退出黑名单）、工资单计算（三项构成/确认锁定）、找回密码（发码限流/试错限次/过期/重置）。
+测试自动使用独立库 `enterprise_test`（不存在时自动创建并迁移播种），用例内所有写入收敛到 savepoint、结束统一回滚，**不污染开发库**。
+
 ## 预置账号
 
 | 账号 | 密码 | 角色 | 说明 |
