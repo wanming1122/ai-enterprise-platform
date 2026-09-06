@@ -1,12 +1,15 @@
-"""认证路由：登录 / 刷新令牌轮换 / 退出 / 当前用户信息。"""
+"""认证路由：登录 / 刷新令牌轮换 / 退出 / 当前用户信息 / 公开注册申请。"""
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
+from app.models.role import SysRole
 from app.models.user import SysUser
+from app.schemas.approval import RegisterApplyIn
 from app.schemas.auth import LoginIn, LogoutIn, RefreshIn
-from app.services import auth_service
+from app.services import approval_service, auth_service
 from app.utils.response import ok
 
 router = APIRouter(prefix="/api/v1/auth", tags=["认证"])
@@ -46,3 +49,21 @@ def me(
 ):
     """当前用户信息 + 菜单树 + 权限标识（刷新后恢复会话用）。"""
     return ok(auth_service.current_user_payload(db, user))
+
+
+@router.get("/register-options")
+def register_options(db: Session = Depends(get_db)):
+    """公开：可申请的注册角色（排除超级管理员）。"""
+    roles = db.scalars(
+        select(SysRole).where(SysRole.status == 1, SysRole.role_type != 1).order_by(SysRole.id)
+    ).all()
+    return ok([{"id": r.id, "name": r.name} for r in roles])
+
+
+@router.post("/register-apply")
+def register_apply(data: RegisterApplyIn, request: Request, db: Session = Depends(get_db)):
+    """公开：提交注册申请（创建停用账号，等待管理员审批）。"""
+    return ok(
+        approval_service.register_apply(db, data, _client_ip(request)),
+        message="申请已提交，请等待管理员审批",
+    )

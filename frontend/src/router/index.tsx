@@ -22,6 +22,11 @@ import NL2SQLProduct from '@/views/ai/nl2sql/product'
 import NL2SQLHistory from '@/views/ai/nl2sql/history'
 import AIChat from '@/views/ai/chat'
 import LogList from '@/views/log'
+import ApprovalList from '@/views/org/approval'
+import InvitationList from '@/views/org/invitation'
+import ConfigList from '@/views/settings/config'
+import DictList from '@/views/settings/dict'
+import InviteAccept from '@/views/invite/accept'
 import Placeholder from '@/views/placeholder'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -51,6 +56,10 @@ const viewMap: Record<string, ComponentType> = {
   'views/ai/nl2sql/history/index': NL2SQLHistory,
   'views/ai/chat/index': AIChat,
   'views/log/index': LogList,
+  'views/org/approval/index': ApprovalList,
+  'views/org/invitation/index': InvitationList,
+  'views/settings/config/index': ConfigList,
+  'views/settings/dict/index': DictList,
 }
 
 function renderView(component?: string, name?: string): ReactNode {
@@ -82,6 +91,8 @@ export default function AppRoutes() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={token ? <Navigate to="/" replace /> : <Login />} />
+        {/* 公开页：入职邀请链接注册（无需登录） */}
+        <Route path="/invite/:token" element={<InviteAccept />} />
         {/* 登录守卫：未认证访问主布局重定向到登录页 */}
         <Route path="/" element={token ? <MainLayout /> : <Navigate to="/login" replace />}>
           <Route index element={<Dashboard />} />
