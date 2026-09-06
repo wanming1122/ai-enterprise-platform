@@ -348,7 +348,7 @@ export default function KBChat() {
         style={{
           width: 260,
           flexShrink: 0,
-          background: '#fff',
+          background: 'var(--ant-color-bg-container)',
           borderRadius: 8,
           border: '1px solid #f0f0f0',
           display: 'flex',
@@ -403,7 +403,7 @@ export default function KBChat() {
         style={{
           flex: 1,
           minWidth: 0,
-          background: '#fff',
+          background: 'var(--ant-color-bg-container)',
           borderRadius: 8,
           border: '1px solid #f0f0f0',
           display: 'flex',

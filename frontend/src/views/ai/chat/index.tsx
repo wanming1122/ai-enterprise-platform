@@ -403,7 +403,7 @@ export default function AIChat() {
       <div
         style={{
           width: 260,
-          background: '#fff',
+          background: 'var(--ant-color-bg-container)',
           borderRadius: 8,
           padding: 12,
           display: 'flex',
@@ -476,7 +476,7 @@ export default function AIChat() {
       <div
         style={{
           flex: 1,
-          background: '#fff',
+          background: 'var(--ant-color-bg-container)',
           borderRadius: 8,
           padding: 12,
           display: 'flex',
