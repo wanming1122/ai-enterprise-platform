@@ -79,7 +79,7 @@ api_key 经 Fernet 对称加密入库（密钥为 .env 的 `FERNET_KEY`，生成
 | 账号 | 密码 | 角色 | 说明 |
 | --- | --- | --- | --- |
 | admin | admin123456 | 超级管理员 | 迁移自动播种，全部权限 |
-| emp_zhang / emp_li / emp_wang / emp_zhao / emp_liu / reg_emp | Demo@123456 | 普通员工 | 演示数据员工，用于验证菜单差异与个人中心数据隔离 |
+| emp_zhang / emp_li / emp_wang / emp_zhao / emp_liu / reg_emp | Demo@123456 | 普通员工 | 演示数据员工，用于验证菜单差异（含 AI助手入口：可问答，无知识库管理/NL2SQL/模型配置权限）、个人中心数据隔离 |
 | 用户导入 | admin123456 | — | 员工管理 Excel 导入的默认初始密码 |
 
 演示库已含示例数据：6 个部门、6 个职位、在职员工与本月考勤/工资单、产品数据、AI 会话记录。全新初始化则业务表为空，可通过各页面录入或 Excel 导入。
