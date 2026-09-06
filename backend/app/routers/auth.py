@@ -73,10 +73,14 @@ def register_apply(data: RegisterApplyIn, request: Request, db: Session = Depend
 def recovery_send_code(data: RecoverySendIn, request: Request, db: Session = Depends(get_db)):
     """公开：找回密码第一步，生成验证码（限流：账号15分钟3次/IP15分钟10次）。
 
-    演示环境未接入邮件/短信服务，验证码在 data.code 中直接回显。
+    SMTP 已配置且账号登记邮箱时真实下发邮件；否则演示回显（data.code 直接返回）。
     """
-    data_result = password_recovery_service.send_code(db, data.username, _client_ip(request))
-    return ok(data_result, message="验证码已生成，10分钟内有效（演示环境直接回显）")
+    result = password_recovery_service.send_code(db, data.username, _client_ip(request))
+    if result.get("channel") == "email":
+        message = f"验证码已发送至邮箱 {result.get('email')}，10分钟内有效"
+    else:
+        message = "验证码已生成，10分钟内有效（演示环境直接回显）"
+    return ok(result, message=message)
 
 
 @router.post("/password-recovery/reset")

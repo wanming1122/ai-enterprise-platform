@@ -5,13 +5,17 @@
 演示环境未接入邮件/短信服务，验证码在响应中直接回显（仅演示用途）。
 """
 import secrets
+import smtplib
 from datetime import datetime, timedelta
+from email.header import Header
+from email.mime.text import MIMEText
 
 from fastapi import HTTPException
 from passlib.context import CryptContext
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.password_recovery_code import SysPasswordRecoveryCode
 from app.models.user import SysUser
 from app.services.operation_log_service import write_log
@@ -30,6 +34,39 @@ _ip_send: dict[str, dict] = {}
 
 def _reject(detail: str) -> None:
     raise HTTPException(status_code=422, detail=detail)
+
+
+def _smtp_configured() -> bool:
+    return bool(settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD)
+
+
+def _mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    if not domain:
+        return "***"
+    return f"{local[:2]}***@{domain}" if len(local) > 2 else f"{local[0]}***@{domain}"
+
+
+def _send_code_email(to_email: str, code: str) -> None:
+    """SMTP 下发验证码邮件：465 走 SSL，其余端口走 STARTTLS。失败抛异常由调用方回退。"""
+    msg = MIMEText(
+        f"您正在找回企业管理系统账号的登录密码。\n\n验证码：{code}（{CODE_TTL_MINUTES} 分钟内有效）\n\n"
+        f"若非本人操作，请忽略本邮件并注意账号安全。",
+        "plain", "utf-8",
+    )
+    msg["Subject"] = Header("企业管理系统 - 找回密码验证码", "utf-8")
+    msg["From"] = settings.SMTP_FROM or settings.SMTP_USER
+    msg["To"] = to_email
+    if settings.SMTP_PORT == 465:
+        server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10)
+    else:
+        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10)
+        server.starttls()
+    try:
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+    finally:
+        server.quit()
 
 
 def _check_ip_limit(ip: str) -> None:
@@ -80,10 +117,21 @@ def send_code(db: Session, username: str, ip: str) -> dict:
     db.commit()
     write_log(db, user_id=user.id, username=user.username, module="认证",
               action="申请找回密码", ip=ip, result=1)
-    return {
-        "code": code,  # 演示环境未接入邮件/短信，直接回显；接入后改为下发渠道发送
-        "expires_in_minutes": CODE_TTL_MINUTES,
-    }
+
+    # 真实下发：SMTP 已配置且账号登记了邮箱；否则回退演示回显（未接渠道的环境）
+    email = (user.email or "").strip()
+    if _smtp_configured() and email:
+        try:
+            _send_code_email(email, code)
+        except Exception as exc:
+            write_log(db, user_id=user.id, username=user.username, module="认证",
+                      action="找回密码邮件发送失败", result=0, error_message=str(exc)[:200])
+            return {"code": code, "expires_in_minutes": CODE_TTL_MINUTES,
+                    "channel": "demo", "email": None,
+                    "note": "邮件发送失败，已回退演示回显"}
+        return {"code": None, "expires_in_minutes": CODE_TTL_MINUTES,
+                "channel": "email", "email": _mask_email(email)}
+    return {"code": code, "expires_in_minutes": CODE_TTL_MINUTES, "channel": "demo", "email": None}
 
 
 def reset_password(db: Session, username: str, code: str, new_password: str) -> None:

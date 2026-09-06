@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     MEDIA_DIR: str = "./media"
     CHROMA_DIR: str = "./data/chroma"
 
+    # SMTP 邮件（找回密码验证码下发；留空则走演示回显模式）
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""  # 发件人，缺省用 SMTP_USER
+
     # 模型 API（通过 .env 注入，严禁硬编码真实密钥）
     ZHIPU_API_KEY: str = ""
     MIMO_BASE_URL: str = ""

@@ -78,7 +78,11 @@ export default function Login() {
       const result = await recoveryApi.sendCode(username)
       setRecoveryAccount(username)
       setRecoveryStep(1)
-      message.info(`演示环境未接入邮件/短信，验证码：${result.code}（${result.expires_in_minutes}分钟内有效）`, 8)
+      if (result.channel === 'email') {
+        message.success(`验证码已发送至邮箱 ${result.email}，${result.expires_in_minutes} 分钟内有效`, 6)
+      } else {
+        message.info(`演示环境未接入邮件/短信，验证码：${result.code}（${result.expires_in_minutes}分钟内有效）`, 8)
+      }
     } catch {
       // 已由拦截器提示
     } finally {
