@@ -20,6 +20,7 @@ from app.models.user import SysUser
 from app.models.user_role_relation import SysUserRoleRelation
 from app.services.menu_service import build_menu_tree, collect_permissions
 from app.services.operation_log_service import write_log
+from app.services.profile_service import DEFAULT_PREFERENCES
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -61,6 +62,7 @@ def _serialize_user(db: Session, user: SysUser) -> dict:
         "email": user.email,
         "status": user.status,
         "last_login_at": user.last_login_at,
+        "preferences": {**DEFAULT_PREFERENCES, **(user.preferences or {})},
         "roles": [r.code for r in roles],
     }
 

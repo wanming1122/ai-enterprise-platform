@@ -1,4 +1,4 @@
-import { Layout, Menu, Dropdown, Avatar, Space, Typography } from 'antd'
+import { Layout, Menu, Dropdown, Avatar, Space, Typography, notification } from 'antd'
 import type { MenuProps } from 'antd'
 import {
   ApartmentOutlined,
@@ -12,7 +12,7 @@ import {
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
@@ -46,10 +46,26 @@ function toMenuItems(menus: MenuItem[]): NonNullable<MenuProps['items']> {
 }
 
 export default function MainLayout() {
-  const [collapsed, setCollapsed] = useState(false)
+  const { userInfo, menus, logout } = useUserStore()
+  const prefs = userInfo?.preferences
+  // 偏好：侧边菜单默认折叠
+  const [collapsed, setCollapsed] = useState(prefs?.sidebar_collapsed ?? false)
   const navigate = useNavigate()
   const location = useLocation()
-  const { userInfo, menus, logout } = useUserStore()
+
+  // 偏好：站内消息提醒（关闭后进入系统不弹欢迎提醒；sessionStorage 防止同会话重复弹）
+  useEffect(() => {
+    if (prefs?.notify_enabled === false) return
+    if (sessionStorage.getItem('welcomed')) return
+    sessionStorage.setItem('welcomed', '1')
+    notification.open({
+      message: `欢迎回来，${userInfo?.nickname || userInfo?.username || ''}`,
+      description: '今天是美好的一天，祝工作顺利～',
+      placement: 'bottomRight',
+      duration: 3,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleLogout = async () => {
     await logout()

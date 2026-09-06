@@ -34,8 +34,16 @@ export interface UserInfo {
   email?: string
   status?: number
   last_login_at?: string | null
+  /** 个人偏好设置（后端返回时已合并默认值） */
+  preferences?: UserPreferences
   /** 角色编码列表 */
   roles?: string[]
+}
+
+export interface UserPreferences {
+  default_home?: string
+  sidebar_collapsed?: boolean
+  notify_enabled?: boolean
 }
 
 /** 菜单节点（后端菜单树驱动动态路由与侧边导航） */

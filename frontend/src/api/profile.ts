@@ -1,5 +1,5 @@
 import { get, put } from '@/api/request'
-import type { PageResult, UserInfo } from '@/types'
+import type { PageResult, UserPreferences, UserInfo } from '@/types'
 import type { AttRecordItem } from '@/api/attendance'
 import type { SalaryDetail, SalaryItem } from '@/api/salary'
 
@@ -17,6 +17,7 @@ export interface ProfileUpdate {
 
 export const profileApi = {
   update: (data: ProfileUpdate) => put<UserInfo>('/profile', data),
+  updatePreferences: (data: Partial<UserPreferences>) => put<UserPreferences>('/profile/preferences', data),
   changePassword: (data: { old_password: string; new_password: string }) =>
     put<null>('/profile/password', data),
   attendance: (params: { month?: string; page: number; page_size: number }) =>

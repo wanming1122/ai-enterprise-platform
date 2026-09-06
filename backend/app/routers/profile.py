@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, require_permissions
 from app.db.session import get_db
 from app.models.user import SysUser
-from app.schemas.profile import PasswordChange, ProfileUpdate
+from app.schemas.profile import PasswordChange, PreferencesUpdate, ProfileUpdate
 from app.services import profile_service
 from app.utils.page import page_result
 from app.utils.response import ok
@@ -21,6 +21,16 @@ def update_profile(
 ):
     """修改本人资料。"""
     return ok(profile_service.update_profile(db, user, data), message="保存成功")
+
+
+@router.put("/preferences")
+def update_preferences(
+    data: PreferencesUpdate,
+    user: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """修改个人偏好设置（默认首页/侧边栏折叠/消息提醒，合并式更新）。"""
+    return ok(profile_service.update_preferences(db, user, data), message="偏好已保存")
 
 
 @router.put("/password")

@@ -6,7 +6,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from app.models.user import SysUser
-from app.schemas.profile import PasswordChange, ProfileUpdate
+from app.schemas.profile import PasswordChange, PreferencesUpdate, ProfileUpdate
 from app.services import salary_service
 from app.services.attendance_service import list_records as list_attendance_records
 from app.services.operation_log_service import write_log
@@ -16,6 +16,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Data URL 头像上限（约 300KB 压缩后体积）
 MAX_AVATAR_LEN = 400_000
+
+# 偏好设置默认值：未设置时前端按此回退
+DEFAULT_PREFERENCES = {"default_home": "/dashboard", "sidebar_collapsed": False, "notify_enabled": True}
 
 
 def _parse_birthday(value: str | None) -> date | None:
@@ -46,6 +49,22 @@ def update_profile(db: Session, user: SysUser, data: ProfileUpdate) -> dict:
     write_log(db, user_id=user.id, username=user.username, module="个人中心",
               action="修改个人资料", params=data.model_dump(exclude_unset=True, exclude={"avatar"}), result=1)
     return {"updated": len(updates)}
+
+
+def update_preferences(db: Session, user: SysUser, data: PreferencesUpdate) -> dict:
+    """合并式更新个人偏好（白名单键；default_home 必须是站内路径）。"""
+    updates = data.model_dump(exclude_unset=True, exclude_none=True)
+    if "default_home" in updates:
+        path = updates["default_home"]
+        if not (isinstance(path, str) and path.startswith("/") and len(path) <= 128):
+            raise HTTPException(status_code=422, detail="默认首页需为站内路径（以 / 开头）")
+    prefs: dict = dict(user.preferences or {})
+    prefs.update(updates)
+    user.preferences = prefs
+    db.commit()
+    write_log(db, user_id=user.id, username=user.username, module="个人中心",
+              action="修改偏好设置", params=updates, result=1)
+    return prefs
 
 
 def change_password(db: Session, user: SysUser, data: PasswordChange) -> None:

@@ -10,6 +10,7 @@ import {
   Modal,
   Select,
   Space,
+  Switch,
   Tag,
   Upload,
 } from 'antd'
@@ -18,6 +19,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { useRef, useState } from 'react'
 import { profileApi, type ProfileUpdate } from '@/api/profile'
 import { useUserStore } from '@/stores/user'
+import type { MenuItem } from '@/types'
 
 /** 头像文件压缩为 Data URL（最长边 256px，JPEG 0.8 质量），满足 Data URL 直存方案 */
 function compressToDataUrl(file: File, maxSide = 256): Promise<string> {
@@ -55,15 +57,33 @@ interface InfoFormValues {
 export default function ProfileInfo() {
   const { message, modal } = App.useApp()
   const userInfo = useUserStore((s) => s.userInfo)
+  const menus = useUserStore((s) => s.menus)
   const updateUserInfo = useUserStore((s) => s.updateUserInfo)
   const [infoForm] = Form.useForm<InfoFormValues>()
   const [pwdForm] = Form.useForm<{ old_password: string; new_password: string; confirm: string }>()
   const [infoOpen, setInfoOpen] = useState(false)
   const [pwdOpen, setPwdOpen] = useState(false)
+  const [prefOpen, setPrefOpen] = useState(false)
+  const [prefSaving, setPrefSaving] = useState(false)
   const [saving, setSaving] = useState(false)
   const avatarRef = useRef<string | undefined>(undefined)
 
   if (!userInfo) return null
+
+  const prefs = userInfo.preferences ?? {}
+
+  // 授权菜单树 → 可选的默认首页（仅页面节点）
+  const homeOptions: { value: string; label: string }[] = []
+  const walkMenus = (items: MenuItem[]) => {
+    for (const m of items) {
+      if (m.type === 'page' && m.path) homeOptions.push({ value: m.path, label: m.name })
+      if (m.children) walkMenus(m.children)
+    }
+  }
+  walkMenus(menus)
+  if (!homeOptions.some((o) => o.value === '/dashboard')) {
+    homeOptions.unshift({ value: '/dashboard', label: '工作台' })
+  }
 
   const openEdit = () => {
     infoForm.setFieldsValue({
@@ -108,6 +128,24 @@ export default function ProfileInfo() {
       setInfoOpen(false)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const openPrefs = () => setPrefOpen(true)
+
+  const handleSavePrefs = async (values: {
+    default_home: string
+    sidebar_collapsed: boolean
+    notify_enabled: boolean
+  }) => {
+    setPrefSaving(true)
+    try {
+      const preferences = await profileApi.updatePreferences(values)
+      updateUserInfo({ ...userInfo, preferences })
+      message.success('偏好已保存，默认首页与侧边栏折叠下次进入生效')
+      setPrefOpen(false)
+    } finally {
+      setPrefSaving(false)
     }
   }
 
@@ -181,6 +219,7 @@ export default function ProfileInfo() {
         <Space>
           <Button type="primary" onClick={openEdit}>编辑资料</Button>
           <Button onClick={() => { pwdForm.resetFields(); setPwdOpen(true) }}>修改密码</Button>
+          <Button onClick={openPrefs}>偏好设置</Button>
         </Space>
       </Space>
 
@@ -277,6 +316,47 @@ export default function ProfileInfo() {
           >
             <Input.Password placeholder="再次输入新密码" />
           </Form.Item>
+        </Form>
+      </Modal>
+      {/* 偏好设置弹窗 */}
+      <Modal
+        title="偏好设置"
+        open={prefOpen}
+        onCancel={() => setPrefOpen(false)}
+        footer={null}
+        width={440}
+        destroyOnHidden
+      >
+        <Form
+          layout="vertical"
+          initialValues={{
+            default_home: prefs.default_home || '/dashboard',
+            sidebar_collapsed: prefs.sidebar_collapsed ?? false,
+            notify_enabled: prefs.notify_enabled ?? true,
+          }}
+          onFinish={handleSavePrefs}
+        >
+          <Form.Item name="default_home" label="默认首页（登录后落地页）" rules={[{ required: true }]}>
+            <Select options={homeOptions} placeholder="选择登录后进入的页面" />
+          </Form.Item>
+          <Form.Item
+            name="sidebar_collapsed"
+            label="侧边菜单默认折叠"
+            valuePropName="checked"
+          >
+            <Switch checkedChildren="折叠" unCheckedChildren="展开" />
+          </Form.Item>
+          <Form.Item
+            name="notify_enabled"
+            label="站内消息提醒"
+            valuePropName="checked"
+            extra="关闭后进入系统不再弹出欢迎提醒"
+          >
+            <Switch checkedChildren="开" unCheckedChildren="关" />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" block loading={prefSaving}>
+            保存偏好
+          </Button>
         </Form>
       </Modal>
     </Card>

@@ -14,6 +14,13 @@ class ProfileUpdate(BaseModel):
     avatar: str | None = None  # Data URL
 
 
+class PreferencesUpdate(BaseModel):
+    """个人偏好设置（合并进 sys_user.preferences JSON，仅白名单键）。"""
+    default_home: str | None = None      # 登录后默认落地页路径，如 /dashboard
+    sidebar_collapsed: bool | None = None  # 侧边菜单默认折叠
+    notify_enabled: bool | None = None     # 站内消息提醒开关
+
+
 class PasswordChange(BaseModel):
     old_password: str
     new_password: str

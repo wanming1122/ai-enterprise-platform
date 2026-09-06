@@ -68,6 +68,21 @@ function renderView(component?: string, name?: string): ReactNode {
   return <Placeholder name={name} />
 }
 
+/** 默认首页跳转：偏好设置的 default_home，仅在授权菜单中存在时生效，避免越权死循环 */
+function HomeRedirect() {
+  const home = useUserStore((s) => s.userInfo?.preferences?.default_home)
+  const menus = useUserStore((s) => s.menus)
+  const allowed = new Set<string>()
+  const walk = (items: MenuItem[]) => {
+    for (const m of items) {
+      if (m.type === 'page' && m.path) allowed.add(m.path)
+      if (m.children) walk(m.children)
+    }
+  }
+  walk(menus)
+  return <Navigate to={home && allowed.has(home) ? home : '/dashboard'} replace />
+}
+
 /** 由授权菜单树生成路由表：仅页面节点生成路由，目录只作菜单分组 */
 function buildRoutes(menus: MenuItem[]): ReactNode[] {
   return menus.flatMap((menu) => {
@@ -95,7 +110,7 @@ export default function AppRoutes() {
         <Route path="/invite/:token" element={<InviteAccept />} />
         {/* 登录守卫：未认证访问主布局重定向到登录页 */}
         <Route path="/" element={token ? <MainLayout /> : <Navigate to="/login" replace />}>
-          <Route index element={<Dashboard />} />
+          <Route index element={<HomeRedirect />} />
           {dynamicRoutes}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
