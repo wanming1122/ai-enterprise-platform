@@ -16,7 +16,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #1677ff;
+  background: var(--ant-color-primary);
   animation: thinking-bounce 1.2s ease-in-out infinite;
 }
 
@@ -29,7 +29,7 @@
 }
 
 .thinking-text {
-  color: #8c8c8c;
+  color: var(--ant-color-text-tertiary);
   font-size: 13px;
 }
 

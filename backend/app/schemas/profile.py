@@ -19,6 +19,7 @@ class PreferencesUpdate(BaseModel):
     default_home: str | None = None      # 登录后默认落地页路径，如 /dashboard
     sidebar_collapsed: bool | None = None  # 侧边菜单默认折叠
     notify_enabled: bool | None = None     # 站内消息提醒开关
+    theme: str | None = None               # 界面主题：light 浅色 / dark 深色
 
 
 class PasswordChange(BaseModel):

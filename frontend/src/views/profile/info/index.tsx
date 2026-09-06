@@ -134,6 +134,7 @@ export default function ProfileInfo() {
   const openPrefs = () => setPrefOpen(true)
 
   const handleSavePrefs = async (values: {
+    theme: 'light' | 'dark'
     default_home: string
     sidebar_collapsed: boolean
     notify_enabled: boolean
@@ -330,12 +331,21 @@ export default function ProfileInfo() {
         <Form
           layout="vertical"
           initialValues={{
+            theme: prefs.theme === 'dark' ? 'dark' : 'light',
             default_home: prefs.default_home || '/dashboard',
             sidebar_collapsed: prefs.sidebar_collapsed ?? false,
             notify_enabled: prefs.notify_enabled ?? true,
           }}
           onFinish={handleSavePrefs}
         >
+          <Form.Item name="theme" label="界面主题" extra="切换后立即生效，随账号保存">
+            <Select
+              options={[
+                { value: 'light', label: '浅色' },
+                { value: 'dark', label: '深色' },
+              ]}
+            />
+          </Form.Item>
           <Form.Item name="default_home" label="默认首页（登录后落地页）" rules={[{ required: true }]}>
             <Select options={homeOptions} placeholder="选择登录后进入的页面" />
           </Form.Item>

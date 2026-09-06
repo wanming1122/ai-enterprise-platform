@@ -18,7 +18,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 MAX_AVATAR_LEN = 400_000
 
 # 偏好设置默认值：未设置时前端按此回退
-DEFAULT_PREFERENCES = {"default_home": "/dashboard", "sidebar_collapsed": False, "notify_enabled": True}
+DEFAULT_PREFERENCES = {
+    "default_home": "/dashboard", "sidebar_collapsed": False,
+    "notify_enabled": True, "theme": "light",
+}
 
 
 def _parse_birthday(value: str | None) -> date | None:
@@ -58,6 +61,8 @@ def update_preferences(db: Session, user: SysUser, data: PreferencesUpdate) -> d
         path = updates["default_home"]
         if not (isinstance(path, str) and path.startswith("/") and len(path) <= 128):
             raise HTTPException(status_code=422, detail="默认首页需为站内路径（以 / 开头）")
+    if "theme" in updates and updates["theme"] not in ("light", "dark"):
+        raise HTTPException(status_code=422, detail="主题仅支持 light/dark")
     prefs: dict = dict(user.preferences or {})
     prefs.update(updates)
     user.preferences = prefs

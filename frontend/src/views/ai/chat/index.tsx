@@ -268,7 +268,7 @@ export default function AIChat() {
   const renderCitations = (citations?: Citation[]) => {
     if (!citations?.length) return null
     return (
-      <div style={{ borderTop: '1px dashed #d9d9d9', marginTop: 8, paddingTop: 6 }}>
+      <div style={{ borderTop: '1px dashed var(--ant-color-border)', marginTop: 8, paddingTop: 6 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
           引用来源
         </Typography.Text>
@@ -301,7 +301,7 @@ export default function AIChat() {
         <div key={idx} style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
           <div
             style={{
-              background: '#e6f4ff',
+              background: 'var(--ant-color-primary-bg)',
               padding: '8px 12px',
               borderRadius: 8,
               maxWidth: '75%',
@@ -333,7 +333,7 @@ export default function AIChat() {
       <div key={idx} style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 12 }}>
         <div
           style={{
-            background: '#f5f5f5',
+            background: 'var(--ant-color-fill-tertiary)',
             padding: '8px 12px',
             borderRadius: 8,
             maxWidth: '85%',
@@ -419,7 +419,7 @@ export default function AIChat() {
                 borderRadius: 6,
                 marginBottom: 4,
                 cursor: 'pointer',
-                background: c.id === currentConvId ? '#e6f4ff' : undefined,
+                background: c.id === currentConvId ? 'var(--ant-color-primary-bg)' : undefined,
               }}
             >
               <div style={{ minWidth: 0 }}>

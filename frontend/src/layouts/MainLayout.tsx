@@ -1,4 +1,4 @@
-import { Layout, Menu, Dropdown, Avatar, Space, Typography, notification } from 'antd'
+import { Layout, Menu, Dropdown, Avatar, Space, Typography, notification, theme as antdTheme } from 'antd'
 import type { MenuProps } from 'antd'
 import {
   ApartmentOutlined,
@@ -52,6 +52,7 @@ export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(prefs?.sidebar_collapsed ?? false)
   const navigate = useNavigate()
   const location = useLocation()
+  const { token } = antdTheme.useToken()
 
   // 偏好：站内消息提醒（关闭后进入系统不弹欢迎提醒；sessionStorage 防止同会话重复弹）
   useEffect(() => {
@@ -104,7 +105,7 @@ export default function MainLayout() {
       <Layout>
         <Header
           style={{
-            background: '#fff',
+            background: token.colorBgContainer,
             padding: '0 16px',
             display: 'flex',
             alignItems: 'center',

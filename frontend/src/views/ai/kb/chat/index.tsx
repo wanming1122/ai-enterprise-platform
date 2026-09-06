@@ -229,7 +229,7 @@ export default function KBChat() {
   }
 
   const renderCitations = (citations: Citation[]) => (
-    <div style={{ marginTop: 8, borderTop: '1px dashed #e8e8e8', paddingTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+    <div style={{ marginTop: 8, borderTop: '1px dashed var(--ant-color-border)', paddingTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
       <Typography.Text type="secondary" style={{ fontSize: 12, width: '100%' }}>引用来源</Typography.Text>
       {citations.map((c) => (
         <Tooltip
@@ -257,7 +257,7 @@ export default function KBChat() {
         <div key={idx} style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
           <div
             style={{
-              background: '#e6f4ff',
+              background: 'var(--ant-color-primary-bg)',
               padding: '10px 14px',
               borderRadius: 8,
               maxWidth: '75%',
@@ -275,7 +275,7 @@ export default function KBChat() {
       <div key={idx} style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 16 }}>
         <div
           style={{
-            background: '#f5f5f5',
+            background: 'var(--ant-color-fill-tertiary)',
             padding: '10px 14px',
             borderRadius: 8,
             maxWidth: '85%',

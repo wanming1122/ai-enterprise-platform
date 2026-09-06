@@ -44,6 +44,8 @@ export interface UserPreferences {
   default_home?: string
   sidebar_collapsed?: boolean
   notify_enabled?: boolean
+  /** 界面主题：light 浅色 / dark 深色 */
+  theme?: 'light' | 'dark'
 }
 
 /** 菜单节点（后端菜单树驱动动态路由与侧边导航） */
