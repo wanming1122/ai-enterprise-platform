@@ -35,7 +35,8 @@ def get_summary(db: Session) -> dict:
     month_first, month_next = _month_range(today)
 
     # ---------- 统计卡片 ----------
-    user_count = db.scalar(select(func.count()).select_from(SysUser).where(SysUser.status != 2)) or 0
+    # 与「各部门在职人数」图表同口径：只统计在职（status=1）账号，停用/待审批账号不计入
+    user_count = db.scalar(select(func.count()).select_from(SysUser).where(SysUser.status == 1)) or 0
     dept_count = db.scalar(
         select(func.count()).select_from(SysDepartment).where(SysDepartment.status == 1)
     ) or 0
@@ -62,7 +63,7 @@ def get_summary(db: Session) -> dict:
             .where(SalPayroll.year_month == payroll_month)
         ) or 0)
 
-    # ---------- 部门人数分布（含 0 人部门） ----------
+    # ---------- 部门人数分布（含 0 人部门；在职但未挂部门的账号归入「未分配部门」） ----------
     dept_rows = db.execute(
         select(SysDepartment.name, func.count(SysUser.id))
         .join(SysUser, (SysUser.department_id == SysDepartment.id) & (SysUser.status == 1), isouter=True)
@@ -71,6 +72,12 @@ def get_summary(db: Session) -> dict:
         .order_by(func.count(SysUser.id).desc())
     ).all()
     dept_distribution = [{"name": name, "value": int(count)} for name, count in dept_rows]
+    unassigned_count = db.scalar(
+        select(func.count()).select_from(SysUser).where(SysUser.status == 1, SysUser.department_id.is_(None))
+    ) or 0
+    if unassigned_count:
+        # 追加在末尾，保证真实部门保持人数降序
+        dept_distribution.append({"name": "未分配部门", "value": int(unassigned_count)})
 
     # ---------- 职位人数 TOP8 ----------
     position_rows = db.execute(

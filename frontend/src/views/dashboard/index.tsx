@@ -112,7 +112,7 @@ export default function Dashboard() {
 
   const cards = summary
     ? [
-        { title: '用户总数', value: summary.user_count, icon: <TeamOutlined style={{ color: PALETTE[0] }} /> },
+        { title: '在职人数', value: summary.user_count, icon: <TeamOutlined style={{ color: PALETTE[0] }} /> },
         { title: '部门数', value: summary.dept_count, icon: <ApartmentOutlined style={{ color: PALETTE[5] }} /> },
         { title: '职位数', value: summary.position_count, icon: <IdcardOutlined style={{ color: PALETTE[4] }} /> },
         {
