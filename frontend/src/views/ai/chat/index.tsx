@@ -101,7 +101,7 @@ export default function AIChat() {
     let pendingTools: AIToolEvent[] = []
     for (const m of detail.messages) {
       if (m.role === 'user') {
-        list.push({ role: 'user', content: m.content })
+        list.push({ role: 'user', content: m.content, attachments: m.attachments ?? undefined })
       } else if (m.role === 'tool') {
         pendingTools.push({ tool: m.tool_name ?? '' })
       } else {
