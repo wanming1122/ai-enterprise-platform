@@ -22,7 +22,7 @@ from langgraph.graph import END, StateGraph
 from app.models.ai import AIConversation, AIMessage
 from app.models.kb import KBKnowledgeBase
 from app.models.nl2sql import NL2SQLRecord
-from app.services import kb_rag_service, llm_client, nl2sql_service
+from app.services import kb_rag_service, llm_client, nl2sql_service, server_admin_service
 from app.services.operation_log_service import write_log
 from app.db.session import SessionLocal
 
@@ -89,6 +89,25 @@ TOOLS_SPEC = [
     {
         "type": "function",
         "function": {
+            "name": "server_admin",
+            "description": "只读探查服务器状态（MCP 风格）。action 可选：system_info 系统信息 / disk 磁盘占用 / process 进程列表 / network 网络连接统计 / file_list 目录浏览 / file_read 读取项目内文本文件。仅当用户询问服务器、磁盘、进程、网络或项目文件相关问题时调用；全部为只读操作。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["system_info", "disk", "process", "network", "file_list", "file_read"],
+                        "description": "要执行的只读探查动作",
+                    },
+                    "path": {"type": "string", "description": "file_list/file_read 的项目内相对路径，缺省为项目根目录"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "nl2sql",
             "description": "查询产品数据表(product)，返回实时数据。回答产品库存、价格、分类、数量等数据问题前必须先调用。",
             "parameters": {
@@ -134,6 +153,7 @@ class AgentState(TypedDict, total=False):
     username: str
     deep_thinking: bool
     images: list[str]
+    server_admin_enabled: bool
     answer: str
     reasoning: str
 
@@ -181,6 +201,15 @@ def _tools_node(state: AgentState) -> dict:
                     result = {"context_chunks": chunks}
                 else:
                     result = {}
+            elif name == "server_admin":
+                action = str(args.get("action") or "")
+                path = str(args.get("path") or "") or None
+                if not state.get("server_admin_enabled"):
+                    content = "当前账号没有服务器管理权限，无法执行该操作。请告知用户联系管理员开通。"
+                else:
+                    writer({"kind": "tool", "tool": "server_admin", "action": action, "path": path})
+                    content = server_admin_service.run_action(action, {"path": path})
+                result = {}
             elif name == "nl2sql":
                 question = str(args.get("question") or "").strip()
                 writer({"kind": "tool", "tool": "nl2sql", "question": question})
@@ -312,7 +341,8 @@ def _sse(event: str, data) -> str:
 
 def chat_sse(
     user_id: int, username: str, *,
-    question: str, conversation_id: int | None, deep_thinking: bool, images: list[str] | None = None,
+    question: str, conversation_id: int | None, deep_thinking: bool,
+    images: list[str] | None = None, enable_server_admin: bool = False,
 ):
     """SSE 生成器：建/续会话 → 运行 LangGraph 图并转发 custom 事件 → 持久化消息。"""
     db = SessionLocal()
@@ -357,6 +387,7 @@ def chat_sse(
             "username": username,
             "deep_thinking": deep_thinking,
             "images": imgs,
+            "server_admin_enabled": enable_server_admin,
         }
         final_state: AgentState = {}
         try:

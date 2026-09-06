@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.models.user import SysUser
 from app.schemas.ai import AIChatIn
 from app.services import ai_chat_service
+from app.services.menu_service import collect_permissions
 from app.utils.page import page_result
 from app.utils.response import ok
 
@@ -18,13 +19,18 @@ router = APIRouter(prefix="/api/v1/ai", tags=["AI助手"])
 def chat(
     data: AIChatIn,
     operator: SysUser = Depends(require_permissions("ai:chat")),
+    db: Session = Depends(get_db),
 ):
-    """AI助手流式问答（LangGraph Agent：agent⇄tools[retrieve/nl2sql]→generate），支持图片多模态。"""
+    """AI助手流式问答（LangGraph Agent：agent⇄tools[retrieve/nl2sql/server_admin]→generate）。
+
+    支持图片多模态；仅持 ai:server_admin 权限的账号注入服务器管理工具。
+    """
+    enable_server_admin = "ai:server_admin" in set(collect_permissions(db, operator.id))
     return StreamingResponse(
         ai_chat_service.chat_sse(
             operator.id, operator.username, question=data.question.strip(),
             conversation_id=data.conversation_id, deep_thinking=data.deep_thinking,
-            images=data.images,
+            images=data.images, enable_server_admin=enable_server_admin,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

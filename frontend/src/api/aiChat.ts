@@ -26,9 +26,12 @@ export interface AIConversationDetail extends AIConversationItem {
 }
 
 export interface AIToolEvent {
-  tool: 'retrieve' | 'nl2sql' | string
+  tool: 'retrieve' | 'nl2sql' | 'server_admin' | string
   query?: string
   question?: string
+  /** server_admin 工具的探查动作与路径 */
+  action?: string
+  path?: string
 }
 
 export interface AIChatStreamHandlers {
@@ -122,6 +125,8 @@ export async function streamAIChat(
           tool: String(data.tool ?? ''),
           query: data.query != null ? String(data.query) : undefined,
           question: data.question != null ? String(data.question) : undefined,
+          action: data.action != null ? String(data.action) : undefined,
+          path: data.path != null ? String(data.path) : undefined,
         })
         break
       case 'message':

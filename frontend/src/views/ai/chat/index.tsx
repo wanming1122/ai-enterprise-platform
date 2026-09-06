@@ -13,6 +13,7 @@ import {
   Upload,
 } from 'antd'
 import {
+  CloudServerOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   PictureOutlined,
@@ -249,6 +250,13 @@ export default function AIChat() {
             return (
               <Tag key={i} icon={<SearchOutlined />} color="processing" style={{ marginInlineEnd: 0 }}>
                 已检索知识库{t.query ? `：${t.query}` : ''}
+              </Tag>
+            )
+          }
+          if (t.tool === 'server_admin') {
+            return (
+              <Tag key={i} icon={<CloudServerOutlined />} color="warning" style={{ marginInlineEnd: 0 }}>
+                已查询服务器{t.action ? `：${t.action}${t.path ? ` · ${t.path}` : ''}` : ''}
               </Tag>
             )
           }
