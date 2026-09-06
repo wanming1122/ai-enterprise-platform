@@ -27,6 +27,8 @@
 
 环境要求：Python 3.12+、Node.js 18+、MySQL 8。
 
+**方式一（推荐）：双击根目录 `start-all.bat`** —— 自动检查 MySQL、同步数据库迁移（alembic upgrade head）、在新窗口分别启动后端（含 `--reload` 热重载）与前端，完成后自动打开浏览器；`stop-all.bat` 按端口一键停止两个服务。以下为手动分步启动。
+
 ### 1. 初始化数据库
 
 ```sql
