@@ -8,8 +8,8 @@ from app.db.session import get_db
 from app.models.role import SysRole
 from app.models.user import SysUser
 from app.schemas.approval import RegisterApplyIn
-from app.schemas.auth import LoginIn, LogoutIn, RefreshIn
-from app.services import approval_service, auth_service
+from app.schemas.auth import LoginIn, LogoutIn, RecoveryResetIn, RecoverySendIn, RefreshIn
+from app.services import approval_service, auth_service, password_recovery_service
 from app.utils.response import ok
 
 router = APIRouter(prefix="/api/v1/auth", tags=["认证"])
@@ -67,3 +67,20 @@ def register_apply(data: RegisterApplyIn, request: Request, db: Session = Depend
         approval_service.register_apply(db, data, _client_ip(request)),
         message="申请已提交，请等待管理员审批",
     )
+
+
+@router.post("/password-recovery/send-code")
+def recovery_send_code(data: RecoverySendIn, request: Request, db: Session = Depends(get_db)):
+    """公开：找回密码第一步，生成验证码（限流：账号15分钟3次/IP15分钟10次）。
+
+    演示环境未接入邮件/短信服务，验证码在 data.code 中直接回显。
+    """
+    data_result = password_recovery_service.send_code(db, data.username, _client_ip(request))
+    return ok(data_result, message="验证码已生成，10分钟内有效（演示环境直接回显）")
+
+
+@router.post("/password-recovery/reset")
+def recovery_reset(data: RecoveryResetIn, request: Request, db: Session = Depends(get_db)):
+    """公开：找回密码第二步，验证码校验通过后重置密码。"""
+    password_recovery_service.reset_password(db, data.username, data.code, data.new_password)
+    return ok(message="密码已重置，请使用新密码登录")
