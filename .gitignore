@@ -25,3 +25,10 @@ Thumbs.db
 # 本地工具
 .zcode/
 .pytest_cache/
+
+# Word 文档构建中间目录
+docx_build/
+*.docx
+
+# 本地实训留档（不入库）
+实训成果物要求.md
