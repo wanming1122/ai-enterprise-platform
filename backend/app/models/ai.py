@@ -56,4 +56,5 @@ class AIMessage(Base):
     reasoning_content: Mapped[str | None] = mapped_column(Text, comment="深度思考过程（推理模型）")
     tool_name: Mapped[str | None] = mapped_column(String(32), comment="工具名（AI助手用）")
     citations: Mapped[list | None] = mapped_column(JSON, comment="引用来源列表")
+    attachments: Mapped[list | None] = mapped_column(JSON, comment="附件列表（多模态图片 Data URL）")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

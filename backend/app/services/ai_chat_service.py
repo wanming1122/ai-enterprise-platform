@@ -8,6 +8,7 @@ LLM 调用统一走 llm_client（httpx 直连 OpenAI 兼容接口）：推理型
 """
 import json
 import operator
+import re
 from datetime import datetime
 from typing import Annotated, Literal, TypedDict
 
@@ -29,6 +30,46 @@ HISTORY_ROUNDS = 4          # 多轮上下文回放最近 4 轮 user/assistant �
 MAX_TOOL_ROUNDS = 6         # 单次提问工具调用轮次上限
 TOOL_RESULT_MAX_CHARS = 4000
 TOOL_STORE_MAX_CHARS = 2000  # tool 消息持久化截断长度
+
+# 多模态图片约束（Data URL 直存方案，与头像一致；SSE 请求体携带）
+_IMAGE_RE = re.compile(r"^data:image/(png|jpe?g|webp);base64,[A-Za-z0-9+/=\s]+$")
+MAX_IMAGE_CHARS = 4_000_000  # 单张 Data URL 字符上限（约 3MB 原图）
+
+
+def validate_images(images: list[str]) -> list[str]:
+    """校验随问图片：仅 png/jpeg/webp Data URL、单张 ≤4M 字符、最多 3 张。SSE 开始前调用。"""
+    if not images:
+        return []
+    if len(images) > 3:
+        raise HTTPException(status_code=422, detail="每次最多附带 3 张图片")
+    for img in images:
+        if not _IMAGE_RE.match(img or ""):
+            raise HTTPException(status_code=422, detail="仅支持 png/jpg/webp 图片")
+        if len(img) > MAX_IMAGE_CHARS:
+            raise HTTPException(status_code=422, detail="单张图片过大（压缩后需小于 3MB）")
+    return images
+
+
+def _user_content(question: str, images: list[str]) -> str | list[dict]:
+    """当前轮 user 消息体：带图时用 OpenAI 多模态 content parts，否则纯文本。"""
+    if not images:
+        return question
+    return [
+        {"type": "text", "text": question},
+        *[{"type": "image_url", "image_url": {"url": img}} for img in images],
+    ]
+
+
+def _strip_images(messages: list[dict]) -> list[dict]:
+    """把消息中的多模态 content parts 退化为纯文本（模型不支持视觉时降级用）。"""
+    out: list[dict] = []
+    for m in messages:
+        if isinstance(m.get("content"), list):
+            text = " ".join(p.get("text", "") for p in m["content"] if p.get("type") == "text")
+            out = [*out, {**m, "content": f"{text}\n（用户上传了图片，当前模型不支持图片识别，请据文字回答）"}]
+        else:
+            out = [*out, m]
+    return out
 
 # ---------- 工具定义与提示词 ----------
 
@@ -92,6 +133,7 @@ class AgentState(TypedDict, total=False):
     user_id: int
     username: str
     deep_thinking: bool
+    images: list[str]
     answer: str
     reasoning: str
 
@@ -100,7 +142,15 @@ def _agent_node(state: AgentState) -> dict:
     """工具调用决策：达到轮次上限则不再调用工具，直接进入生成。"""
     if state.get("rounds", 0) >= MAX_TOOL_ROUNDS:
         return {"messages": [{"role": "assistant", "content": ""}]}
-    msg = llm_client.chat_with_tools(state["messages"], TOOLS_SPEC, max_tokens=1536, temperature=0.2)
+    try:
+        msg = llm_client.chat_with_tools(state["messages"], TOOLS_SPEC, max_tokens=1536, temperature=0.2)
+    except HTTPException:
+        if not state.get("images"):
+            raise
+        # 带图提问且模型不支持视觉输入时，退化纯文本重试一次
+        msg = llm_client.chat_with_tools(
+            _strip_images(state["messages"]), TOOLS_SPEC, max_tokens=1536, temperature=0.2
+        )
     return {"messages": [msg]}
 
 
@@ -193,15 +243,28 @@ def _generate_node(state: AgentState) -> dict:
     deep = state.get("deep_thinking", False)
     answer: list[str] = []
     reasoning: list[str] = []
+
+    def _emit(kind: str, delta: str) -> None:
+        if kind == "reasoning":
+            if deep:
+                reasoning.append(delta)
+                writer({"kind": "reasoning", "delta": delta})
+        else:
+            answer.append(delta)
+            writer({"kind": "message", "delta": delta})
+
     try:
-        for kind, delta in llm_client.chat_stream(msgs, max_tokens=3072, temperature=0.3):
-            if kind == "reasoning":
-                if deep:
-                    reasoning.append(delta)
-                    writer({"kind": "reasoning", "delta": delta})
-            else:
-                answer.append(delta)
-                writer({"kind": "message", "delta": delta})
+        try:
+            for kind, delta in llm_client.chat_stream(msgs, max_tokens=3072, temperature=0.3):
+                _emit(kind, delta)
+        except HTTPException:
+            if not state.get("images"):
+                raise
+            # 带图提问且模型不支持视觉输入（请求即被拒，尚未产出增量）时，退化纯文本重试
+            answer.clear()
+            reasoning.clear()
+            for kind, delta in llm_client.chat_stream(_strip_images(msgs), max_tokens=3072, temperature=0.3):
+                _emit(kind, delta)
     except HTTPException as exc:
         writer({"kind": "error", "message": str(exc.detail)})
         return {"answer": "", "reasoning": "", "citations": [], "error": str(exc.detail)}
@@ -247,7 +310,10 @@ def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def chat_sse(user_id: int, username: str, *, question: str, conversation_id: int | None, deep_thinking: bool):
+def chat_sse(
+    user_id: int, username: str, *,
+    question: str, conversation_id: int | None, deep_thinking: bool, images: list[str] | None = None,
+):
     """SSE 生成器：建/续会话 → 运行 LangGraph 图并转发 custom 事件 → 持久化消息。"""
     db = SessionLocal()
     try:
@@ -270,14 +336,18 @@ def chat_sse(user_id: int, username: str, *, question: str, conversation_id: int
         recent.reverse()
         history = [{"role": m.role, "content": m.content} for m in recent]
 
-        db.add(AIMessage(conversation_id=conv.id, role="user", content=question))
+        imgs = validate_images(images or [])
+        db.add(AIMessage(
+            conversation_id=conv.id, role="user", content=question,
+            attachments=[{"type": "image", "url": img} for img in imgs] or None,
+        ))
         db.commit()
 
         init_state: AgentState = {
             "messages": [
                 {"role": "system", "content": AGENT_SYSTEM_PROMPT},
                 *history,
-                {"role": "user", "content": question},
+                {"role": "user", "content": _user_content(question, imgs)},
             ],
             "context_chunks": [],
             "citations": [],
@@ -286,6 +356,7 @@ def chat_sse(user_id: int, username: str, *, question: str, conversation_id: int
             "user_id": user_id,
             "username": username,
             "deep_thinking": deep_thinking,
+            "images": imgs,
         }
         final_state: AgentState = {}
         try:
@@ -358,6 +429,7 @@ def serialize_message(m: AIMessage) -> dict:
         "reasoning_content": m.reasoning_content,
         "tool_name": m.tool_name,
         "citations": m.citations,
+        "attachments": m.attachments,
         "created_at": m.created_at.isoformat(),
     }
 

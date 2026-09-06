@@ -2,6 +2,7 @@ import {
   App,
   Button,
   Collapse,
+  Image as AntImage,
   Input,
   Popconfirm,
   Space,
@@ -9,10 +10,12 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Upload,
 } from 'antd'
 import {
   DatabaseOutlined,
   DeleteOutlined,
+  PictureOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -30,6 +33,7 @@ import type { Citation } from '@/api/kb'
 import MarkdownText from '@/components/MarkdownText'
 import ThinkingIndicator from '@/components/ThinkingIndicator'
 import { useUserStore } from '@/stores/user'
+import { compressToDataUrl } from '@/utils/image'
 
 const fmtTime = (v: string | null | undefined) => (v ? v.slice(0, 19).replace('T', ' ') : '')
 
@@ -39,6 +43,7 @@ interface ChatMsg {
   reasoning?: string
   tools?: AIToolEvent[]
   citations?: Citation[]
+  attachments?: { type: string; url: string }[]
   streaming?: boolean
   stopped?: boolean
 }
@@ -55,6 +60,7 @@ export default function AIChat() {
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [deepThinking, setDeepThinking] = useState(false)
+  const [pendingImages, setPendingImages] = useState<string[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
 
@@ -138,11 +144,21 @@ export default function AIChat() {
   const send = async () => {
     const question = input.trim()
     if (!question || streaming) return
+    if (!question && pendingImages.length) {
+      message.warning('请附上想询问图片的问题')
+      return
+    }
     setInput('')
     setStreaming(true)
+    const images = pendingImages
+    setPendingImages([])
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: question },
+      {
+        role: 'user',
+        content: question,
+        attachments: images.map((url) => ({ type: 'image', url })),
+      },
       { role: 'assistant', content: '', tools: [], citations: [], streaming: true },
     ])
 
@@ -154,7 +170,7 @@ export default function AIChat() {
 
     try {
       await streamAIChat(
-        { question, conversation_id: currentConvId, deep_thinking: deepThinking },
+        { question, conversation_id: currentConvId, deep_thinking: deepThinking, images },
         {
           onMeta: ({ conversation_id }) => {
             if (currentConvId == null) {
@@ -186,6 +202,7 @@ export default function AIChat() {
           },
           onError: (msg) => {
             patchAssistant({ streaming: false, stopped: true })
+            if (!answer) setPendingImages(images)
             message.error(msg)
           },
         },
@@ -197,6 +214,7 @@ export default function AIChat() {
       } else {
         patchAssistant({ streaming: false, stopped: true })
       }
+      if (!answer) setPendingImages(images)
     } finally {
       setStreaming(false)
       abortRef.current = null
@@ -205,6 +223,21 @@ export default function AIChat() {
 
   const stop = () => {
     abortRef.current?.abort()
+  }
+
+  /** 选图：压缩为 Data URL（最长边 1568），最多 3 张随问发送 */
+  const handlePickImage = async (file: File) => {
+    if (pendingImages.length >= 3) {
+      message.warning('每次最多附带 3 张图片')
+      return false
+    }
+    try {
+      const dataUrl = await compressToDataUrl(file, 1568, 0.85)
+      setPendingImages((prev) => [...prev, dataUrl])
+    } catch {
+      message.error('图片处理失败')
+    }
+    return false
   }
 
   const renderToolChips = (tools?: AIToolEvent[]) => {
@@ -277,6 +310,20 @@ export default function AIChat() {
               lineHeight: 1.7,
             }}
           >
+            {m.attachments && m.attachments.length > 0 && (
+              <AntImage.PreviewGroup>
+                <Space size={6} wrap style={{ marginBottom: m.content ? 6 : 0 }}>
+                  {m.attachments.map((a, i) => (
+                    <AntImage
+                      key={i}
+                      src={a.url}
+                      width={110}
+                      style={{ borderRadius: 6, objectFit: 'cover' }}
+                    />
+                  ))}
+                </Space>
+              </AntImage.PreviewGroup>
+            )}
             {m.content}
           </div>
         </div>
@@ -489,20 +536,59 @@ export default function AIChat() {
         </div>
 
         <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
-          <Input.TextArea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="可以询问制度、流程等知识库问题；涉及产品数据会自动查询 product 表"
-            autoSize={{ minRows: 2, maxRows: 5 }}
-            maxLength={2000}
-            disabled={streaming}
-            onPressEnter={(e) => {
-              if (!e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault()
-                send()
-              }
-            }}
-          />
+          {pendingImages.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Space size={8} wrap>
+                {pendingImages.map((url, i) => (
+                  <div key={i} style={{ position: 'relative', lineHeight: 0 }}>
+                    <img
+                      src={url}
+                      alt={`附图${i + 1}`}
+                      style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e8e8e8' }}
+                    />
+                    <Button
+                      type="text"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      style={{ position: 'absolute', top: -8, right: -8, minWidth: 20, height: 20, padding: 0 }}
+                      onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                    />
+                  </div>
+                ))}
+              </Space>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+            <Upload
+              accept="image/png,image/jpeg,image/webp"
+              showUploadList={false}
+              beforeUpload={handlePickImage}
+              disabled={streaming || pendingImages.length >= 3}
+            >
+              <Button
+                icon={<PictureOutlined />}
+                disabled={streaming || pendingImages.length >= 3}
+                title="附带图片（最多3张，自动压缩）"
+              />
+            </Upload>
+            <div style={{ flex: 1 }}>
+              <Input.TextArea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="可以询问制度、流程等知识库问题；涉及产品数据会自动查询 product 表；可附图片提问"
+                autoSize={{ minRows: 2, maxRows: 5 }}
+                maxLength={2000}
+                disabled={streaming}
+                onPressEnter={(e) => {
+                  if (!e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    send()
+                  }
+                }}
+              />
+            </div>
+          </div>
           <div
             style={{
               display: 'flex',

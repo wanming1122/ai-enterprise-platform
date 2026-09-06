@@ -17,6 +17,7 @@ export interface AIMessageItem {
   reasoning_content: string | null
   tool_name: string | null
   citations: Citation[] | null
+  attachments: { type: string; url: string }[] | null
   created_at: string
 }
 
@@ -59,7 +60,7 @@ export const aiChatApi = {
  * 事件序列 meta→tool*→[reasoning*]→message*→[citations]→done）。401 复用全局刷新令牌重放。
  */
 export async function streamAIChat(
-  payload: { question: string; conversation_id?: number | null; deep_thinking?: boolean },
+  payload: { question: string; conversation_id?: number | null; deep_thinking?: boolean; images?: string[] },
   handlers: AIChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {

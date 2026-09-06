@@ -19,11 +19,12 @@ def chat(
     data: AIChatIn,
     operator: SysUser = Depends(require_permissions("ai:chat")),
 ):
-    """AI助手流式问答（LangGraph Agent：agent⇄tools[retrieve/nl2sql]→generate）。"""
+    """AI助手流式问答（LangGraph Agent：agent⇄tools[retrieve/nl2sql]→generate），支持图片多模态。"""
     return StreamingResponse(
         ai_chat_service.chat_sse(
             operator.id, operator.username, question=data.question.strip(),
             conversation_id=data.conversation_id, deep_thinking=data.deep_thinking,
+            images=data.images,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

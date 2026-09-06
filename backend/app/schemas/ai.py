@@ -6,3 +6,4 @@ class AIChatIn(BaseModel):
     question: str = Field(min_length=1, max_length=2000, description="用户问题")
     conversation_id: int | None = Field(default=None, description="会话ID，空则新建会话")
     deep_thinking: bool = Field(default=False, description="深度思考：下发并持久化推理过程")
+    images: list[str] = Field(default_factory=list, max_length=3, description="随问附带的图片 Data URL（多模态，最多3张）")
