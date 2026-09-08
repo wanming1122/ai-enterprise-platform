@@ -69,6 +69,113 @@
   font-size: 13px;
 }
 
+/* ---------- 代码块（语言标签 + 复制 + 高亮） ---------- */
+
+.md-code-block {
+  margin: 6px 0;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--ant-color-bg-container);
+}
+
+.md-code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+}
+
+.md-code-language {
+  font-size: 12px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  color: var(--ant-color-text-secondary);
+  text-transform: lowercase;
+}
+
+.md-code-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.md-code-copy:hover {
+  color: var(--ant-color-text);
+  background: var(--ant-color-fill-tertiary);
+}
+
+.md-code-pre {
+  margin: 0 !important;
+  padding: 10px 12px;
+  border: none !important;
+  border-radius: 0;
+  max-height: 400px;
+  overflow: auto;
+  background: var(--ant-color-bg-container);
+}
+
+/* 覆盖 .md-body pre code 的通用样式，确保高亮输出不被通用规则污染 */
+.md-body .md-code-pre code {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+/* highlight.js token 配色：映射到 antd cssVar，随明暗主题联动 */
+.md-code-pre code .hljs-comment,
+.md-code-pre code .hljs-quote,
+.md-code-pre code .hljs-meta {
+  color: var(--ant-color-text-tertiary);
+  font-style: italic;
+}
+
+.md-code-pre code .hljs-keyword,
+.md-code-pre code .hljs-selector-tag,
+.md-code-pre code .hljs-type,
+.md-code-pre code .hljs-built_in,
+.md-code-pre code .hljs-class .hljs-title {
+  color: var(--ant-color-link);
+}
+
+.md-code-pre code .hljs-string,
+.md-code-pre code .hljs-regexp,
+.md-code-pre code .hljs-addition,
+.md-code-pre code .hljs-attribute,
+.md-code-pre code .hljs-template-variable {
+  color: var(--ant-color-success);
+}
+
+.md-code-pre code .hljs-number,
+.md-code-pre code .hljs-literal,
+.md-code-pre code .hljs-symbol,
+.md-code-pre code .hljs-bullet,
+.md-code-pre code .hljs-variable {
+  color: var(--ant-color-warning);
+}
+
+.md-code-pre code .hljs-title,
+.md-code-pre code .hljs-section,
+.md-code-pre code .hljs-function .hljs-title {
+  color: var(--ant-color-info);
+}
+
+.md-code-pre code .hljs-attr,
+.md-code-pre code .hljs-property,
+.md-code-pre code .hljs-params {
+  color: var(--ant-color-text);
+}
+
 /* display:block 让宽表格在气泡内横向滚动而不是撑破布局 */
 .md-body table {
   display: block;

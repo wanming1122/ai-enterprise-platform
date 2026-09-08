@@ -447,6 +447,7 @@ def serialize_conversation(c: AIConversation) -> dict:
     return {
         "id": c.id,
         "title": c.title,
+        "pinned": c.pinned == 1,
         "created_at": c.created_at.isoformat(),
         "updated_at": c.updated_at.isoformat(),
     }
@@ -470,8 +471,13 @@ def list_conversations(db: Session, *, user_id: int, page: int = 1, page_size: i
         AIConversation.user_id == user_id, AIConversation.status != 2, AIConversation.source == "ai"
     )
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    # 置顶优先，其次按最近活跃（updated_at）倒序，供会话时间分组使用
     items = db.scalars(
-        q.order_by(AIConversation.id.desc()).offset((page - 1) * page_size).limit(page_size)
+        q.order_by(
+            AIConversation.pinned.desc(), AIConversation.updated_at.desc(), AIConversation.id.desc()
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
     return [serialize_conversation(c) for c in items], total
 
@@ -497,3 +503,30 @@ def delete_conversation(db: Session, conversation_id: int, operator) -> None:
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="AI助手",
               action="删除会话", params={"id": conv.id}, result=1)
+
+
+def update_conversation(
+    db: Session,
+    conversation_id: int,
+    operator,
+    *,
+    title: str | None = None,
+    pinned: bool | None = None,
+) -> dict:
+    """会话编辑（M7）：重命名 title / 置顶 pinned，仅本人会话，至少提供一项。"""
+    if title is None and pinned is None:
+        raise HTTPException(status_code=422, detail="无可更新字段")
+    conv = _get_own_conversation(db, conversation_id, operator.id)
+    if title is not None:
+        conv.title = title.strip() or conv.title
+    if pinned is not None:
+        conv.pinned = 1 if pinned else 0
+    db.commit()
+    params: dict = {"id": conv.id}
+    if title is not None:
+        params["title"] = conv.title
+    if pinned is not None:
+        params["pinned"] = conv.pinned
+    write_log(db, user_id=operator.id, username=operator.username, module="AI助手",
+              action="更新会话", params=params, result=1)
+    return serialize_conversation(conv)

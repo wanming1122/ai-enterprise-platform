@@ -12,9 +12,10 @@ import {
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
-import { useEffect, useState, type ReactNode } from 'react'
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useUserStore } from '@/stores/user'
+import { preloadComponent, preloadPages } from '@/router/viewLoaders'
 import type { MenuItem } from '@/types'
 
 const { Sider, Header, Content } = Layout
@@ -73,6 +74,35 @@ export default function MainLayout() {
     navigate('/login')
   }
 
+  /** 授权菜单 → path→component 映射（菜单点击预载用）与全部页面 component（空闲预载用） */
+  const pageIndex = useMemo(() => {
+    const byPath = new Map<string, string>()
+    const components: string[] = []
+    const walk = (items: MenuItem[]) => {
+      for (const m of items) {
+        if (m.type === 'page' && m.component) {
+          if (m.path) byPath.set(m.path, m.component)
+          components.push(m.component)
+        }
+        if (m.children) walk(m.children)
+      }
+    }
+    walk(menus)
+    return { byPath, components }
+  }, [menus])
+
+  // 主布局挂载后：空闲分批预载授权页面 chunk，使首次点击菜单时页面大多已就绪、直接渲染
+  useEffect(() => {
+    preloadPages(pageIndex.components)
+  }, [pageIndex])
+
+  /** 菜单点击：先触发目标页 chunk 预载（兜底空闲预载尚未完成的场景），再跳转 */
+  const handleMenuClick = ({ key }: { key: string }) => {
+    const component = pageIndex.byPath.get(key)
+    if (component) preloadComponent(component)
+    navigate(key)
+  }
+
   const userName = userInfo?.nickname || userInfo?.username || '未登录'
 
   return (
@@ -99,7 +129,7 @@ export default function MainLayout() {
           mode="inline"
           selectedKeys={[location.pathname]}
           items={toMenuItems(menus)}
-          onClick={({ key }) => navigate(key)}
+          onClick={handleMenuClick}
         />
       </Sider>
       <Layout>
@@ -136,7 +166,10 @@ export default function MainLayout() {
           </Dropdown>
         </Header>
         <Content style={{ margin: 16 }}>
-          <Outlet />
+          {/* 局部 Suspense：页面懒加载挂起时仅内容区空白兜底，侧栏/顶栏保持稳定，不再整屏闪现加载圈 */}
+          <Suspense fallback={null}>
+            <Outlet />
+          </Suspense>
         </Content>
       </Layout>
     </Layout>

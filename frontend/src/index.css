@@ -10,3 +10,101 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
 }
+
+/* ---------- AI 助手：欢迎面板推荐问题卡片 ---------- */
+
+.chat-welcome-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  max-width: 640px;
+  margin-top: 16px;
+}
+
+.chat-followup-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-bg-container);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    transform 0.2s;
+}
+
+.chat-followup-card:hover {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}
+
+.chat-followup-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.chat-followup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-followup-category {
+  font-size: 11px;
+  color: var(--ant-color-text-tertiary);
+}
+
+.chat-followup-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ant-color-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---------- AI 助手：消息操作栏（hover 显现，避免布局跳动） ---------- */
+
+.chat-actions {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.chat-msg-row:hover .chat-actions {
+  opacity: 1;
+}
+
+/* 用户行操作栏置于气泡左侧，助手行置于右侧 */
+.chat-msg-row .chat-actions {
+  margin: 4px 0 0;
+}
+
+/* ---------- AI 助手：流式打字光标（独立元素闪烁） ---------- */
+
+.chat-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--ant-color-text);
+  animation: chat-caret-blink 1s steps(2, start) infinite;
+}
+
+@keyframes chat-caret-blink {
+  to {
+    visibility: hidden;
+  }
+}

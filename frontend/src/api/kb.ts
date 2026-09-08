@@ -1,5 +1,9 @@
-import { clearTokens, del, get, getAccessToken, post, put, refreshAccessToken } from '@/api/request'
+import { del, get, post, put } from '@/api/request'
 import type { PageResult } from '@/types'
+import { fetchSSE } from './sse'
+
+/** 兼容导出：parseSSEBlock 已迁至 ./sse，保留 re-export 避免既有引用方被破坏 */
+export { parseSSEBlock } from './sse'
 
 /** 知识库（列表/详情） */
 export interface KBBase {
@@ -154,115 +158,50 @@ export interface ChatStreamHandlers {
   onError?: (message: string) => void
 }
 
-/** 解析单个 SSE 事件块（event: xxx + data: xxx）；AI助手流式接口复用 */
-export function parseSSEBlock(block: string): { event: string; data: string } | null {
-  let event = 'message'
-  const dataLines: string[] = []
-  for (const line of block.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim()
-    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
-  }
-  if (!dataLines.length) return null
-  return { event, data: dataLines.join('\n') }
-}
-
-function dispatchSSE(event: string, raw: string, handlers: ChatStreamHandlers): void {
-  let data: Record<string, unknown>
-  try {
-    data = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    return
-  }
-  switch (event) {
-    case 'meta':
-      handlers.onMeta?.({ conversation_id: Number(data.conversation_id), search_query: String(data.search_query ?? '') })
-      break
-    case 'message':
-      handlers.onMessage?.(String(data.delta ?? ''))
-      break
-    case 'reasoning':
-      handlers.onReasoning?.(String(data.delta ?? ''))
-      break
-    case 'citations':
-      handlers.onCitations?.(data as unknown as Citation[])
-      break
-    case 'done':
-      handlers.onDone?.({
-        conversation_id: Number(data.conversation_id),
-        message_id: Number(data.message_id),
-        references_used: Number(data.references_used ?? 0),
-      })
-      break
-    case 'error':
-      handlers.onError?.(String(data.message ?? '生成失败'))
-      break
-  }
-}
-
 /**
- * 知识库问答 SSE 流：axios 实例有 15s 超时且经统一拦截器，不适合长流式，
- * 这里用原生 fetch + ReadableStream 手工解析事件流（meta→message*→[reasoning*]→citations→done）。
- * 401 时复用全局刷新令牌逻辑重放一次，刷新失败跳登录页。
+ * 知识库问答 SSE 流：事件序列 meta→message*→[reasoning*]→citations→done。
+ * 底层 fetch/401 刷新/流式解析收敛在 ./sse 公共基座，此处仅做事件映射。
  */
 export async function streamKBChat(
   payload: { question: string; kb_ids: number[]; conversation_id?: number | null; top_k?: number },
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const doFetch = (token: string) =>
-    fetch('/api/v1/kb/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        Authorization: `Bearer ${token}`,
+  await fetchSSE(
+    '/api/v1/kb/chat',
+    payload,
+    {
+      onEvent: (event, data) => {
+        switch (event) {
+          case 'meta':
+            handlers.onMeta?.({
+              conversation_id: Number(data.conversation_id),
+              search_query: String(data.search_query ?? ''),
+            })
+            break
+          case 'message':
+            handlers.onMessage?.(String(data.delta ?? ''))
+            break
+          case 'reasoning':
+            handlers.onReasoning?.(String(data.delta ?? ''))
+            break
+          case 'citations':
+            handlers.onCitations?.(data as unknown as Citation[])
+            break
+          case 'done':
+            handlers.onDone?.({
+              conversation_id: Number(data.conversation_id),
+              message_id: Number(data.message_id),
+              references_used: Number(data.references_used ?? 0),
+            })
+            break
+          case 'error':
+            handlers.onError?.(String(data.message ?? '生成失败'))
+            break
+        }
       },
-      body: JSON.stringify(payload),
-      signal,
-    })
-
-  let res = await doFetch(getAccessToken() ?? '')
-  if (res.status === 401) {
-    try {
-      res = await doFetch(await refreshAccessToken())
-    } catch {
-      clearTokens()
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login'
-      }
-      throw new Error('登录已过期，请重新登录')
-    }
-  }
-
-  if (!res.ok || !res.body) {
-    // HTTP 层错误（403 无权限 / 422 参数问题等）：按统一响应结构回调提示，不再抛出
-    let msg = `请求失败（HTTP ${res.status}）`
-    try {
-      const body = (await res.json()) as { message?: string }
-      if (body?.message) msg = body.message
-    } catch {
-      // 保留默认文案
-    }
-    handlers.onError?.(msg)
-    return
-  }
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  let buffer = ''
-  const handle = (block: string) => {
-    const parsed = parseSSEBlock(block)
-    if (parsed) dispatchSSE(parsed.event, parsed.data, handlers)
-  }
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    // SSE 事件以空行分隔；末尾不足一个完整事件时留在缓冲区
-    const blocks = buffer.split('\n\n')
-    buffer = blocks.pop() ?? ''
-    blocks.forEach(handle)
-  }
-  if (buffer.trim()) handle(buffer)
+      onError: (msg) => handlers.onError?.(msg),
+    },
+    signal,
+  )
 }

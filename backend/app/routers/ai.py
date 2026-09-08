@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import require_permissions
 from app.db.session import get_db
 from app.models.user import SysUser
-from app.schemas.ai import AIChatIn
+from app.schemas.ai import AIChatIn, AIConversationPatchIn
 from app.services import ai_chat_service
 from app.services.menu_service import collect_permissions
 from app.utils.page import page_result
@@ -57,6 +57,21 @@ def get_conversation(
 ):
     """会话详情与全部消息（仅本人会话）。"""
     return ok(ai_chat_service.get_conversation(db, conversation_id, operator))
+
+
+@router.patch("/conversations/{conversation_id}")
+def update_conversation(
+    conversation_id: int,
+    data: AIConversationPatchIn,
+    operator: SysUser = Depends(require_permissions("ai:chat")),
+    db: Session = Depends(get_db),
+):
+    """会话编辑：重命名（title）与置顶（pinned）切换，仅本人会话。"""
+    return ok(
+        ai_chat_service.update_conversation(
+            db, conversation_id, operator, title=data.title, pinned=data.pinned
+        )
+    )
 
 
 @router.delete("/conversations/{conversation_id}")

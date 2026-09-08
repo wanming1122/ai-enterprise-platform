@@ -1,11 +1,13 @@
 import type { PageResult } from '@/types'
-import { get, del } from './request'
-import { getAccessToken, clearTokens, refreshAccessToken } from './request'
-import { parseSSEBlock, type Citation } from './kb'
+import { del, get, patch } from './request'
+import type { Citation } from './kb'
+import { fetchSSE } from './sse'
 
 export interface AIConversationItem {
   id: number
   title: string | null
+  /** 置顶状态：置顶会话在列表中优先展示 */
+  pinned: boolean
   created_at: string
   updated_at: string
 }
@@ -56,107 +58,63 @@ export const aiChatApi = {
     get<PageResult<AIConversationItem>>('/ai/conversations', { params }),
   conversation: (id: number) => get<AIConversationDetail>(`/ai/conversations/${id}`),
   removeConversation: (id: number) => del(`/ai/conversations/${id}`),
+  /** 会话重命名 */
+  rename: (id: number, title: string) =>
+    patch<AIConversationItem>(`/ai/conversations/${id}`, { title }),
+  /** 会话置顶切换 */
+  setPinned: (id: number, pinned: boolean) =>
+    patch<AIConversationItem>(`/ai/conversations/${id}`, { pinned }),
 }
 
 /**
- * AI助手 SSE 流：原生 fetch + ReadableStream 手工解析（与 streamKBChat 同协议，
- * 事件序列 meta→tool*→[reasoning*]→message*→[citations]→done）。401 复用全局刷新令牌重放。
+ * AI助手 SSE 流：事件序列 meta→tool*→[reasoning*]→message*→[citations]→done。
+ * 底层 fetch/401 刷新/流式解析收敛在 ./sse 公共基座，此处仅做事件映射。
  */
 export async function streamAIChat(
   payload: { question: string; conversation_id?: number | null; deep_thinking?: boolean; images?: string[] },
   handlers: AIChatStreamHandlers,
   signal?: AbortSignal,
 ): Promise<void> {
-  const doFetch = (token: string) =>
-    fetch('/api/v1/ai/chat', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        Authorization: `Bearer ${token}`,
+  await fetchSSE(
+    '/api/v1/ai/chat',
+    payload,
+    {
+      onEvent: (event, data) => {
+        switch (event) {
+          case 'meta':
+            handlers.onMeta?.({ conversation_id: Number(data.conversation_id) })
+            break
+          case 'tool':
+            handlers.onTool?.({
+              tool: String(data.tool ?? ''),
+              query: data.query != null ? String(data.query) : undefined,
+              question: data.question != null ? String(data.question) : undefined,
+              action: data.action != null ? String(data.action) : undefined,
+              path: data.path != null ? String(data.path) : undefined,
+            })
+            break
+          case 'message':
+            handlers.onMessage?.(String(data.delta ?? ''))
+            break
+          case 'reasoning':
+            handlers.onReasoning?.(String(data.delta ?? ''))
+            break
+          case 'citations':
+            handlers.onCitations?.(data as unknown as Citation[])
+            break
+          case 'done':
+            handlers.onDone?.({
+              conversation_id: Number(data.conversation_id),
+              message_id: Number(data.message_id),
+            })
+            break
+          case 'error':
+            handlers.onError?.(String(data.message ?? '生成失败'))
+            break
+        }
       },
-      body: JSON.stringify(payload),
-      signal,
-    })
-
-  let res = await doFetch(getAccessToken() ?? '')
-  if (res.status === 401) {
-    try {
-      res = await doFetch(await refreshAccessToken())
-    } catch {
-      clearTokens()
-      if (!window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login'
-      }
-      throw new Error('登录已过期，请重新登录')
-    }
-  }
-
-  if (!res.ok || !res.body) {
-    let msg = `请求失败（HTTP ${res.status}）`
-    try {
-      const body = (await res.json()) as { message?: string }
-      if (body?.message) msg = body.message
-    } catch {
-      // 保留默认文案
-    }
-    handlers.onError?.(msg)
-    return
-  }
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder('utf-8')
-  let buffer = ''
-  const handle = (block: string) => {
-    const parsed = parseSSEBlock(block)
-    if (!parsed) return
-    let data: Record<string, unknown>
-    try {
-      data = JSON.parse(parsed.data) as Record<string, unknown>
-    } catch {
-      return
-    }
-    switch (parsed.event) {
-      case 'meta':
-        handlers.onMeta?.({ conversation_id: Number(data.conversation_id) })
-        break
-      case 'tool':
-        handlers.onTool?.({
-          tool: String(data.tool ?? ''),
-          query: data.query != null ? String(data.query) : undefined,
-          question: data.question != null ? String(data.question) : undefined,
-          action: data.action != null ? String(data.action) : undefined,
-          path: data.path != null ? String(data.path) : undefined,
-        })
-        break
-      case 'message':
-        handlers.onMessage?.(String(data.delta ?? ''))
-        break
-      case 'reasoning':
-        handlers.onReasoning?.(String(data.delta ?? ''))
-        break
-      case 'citations':
-        handlers.onCitations?.(data as unknown as Citation[])
-        break
-      case 'done':
-        handlers.onDone?.({
-          conversation_id: Number(data.conversation_id),
-          message_id: Number(data.message_id),
-        })
-        break
-      case 'error':
-        handlers.onError?.(String(data.message ?? '生成失败'))
-        break
-    }
-  }
-
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const blocks = buffer.split('\n\n')
-    buffer = blocks.pop() ?? ''
-    blocks.forEach(handle)
-  }
-  if (buffer.trim()) handle(buffer)
+      onError: (msg) => handlers.onError?.(msg),
+    },
+    signal,
+  )
 }

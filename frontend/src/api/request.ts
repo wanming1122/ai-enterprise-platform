@@ -141,6 +141,12 @@ export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<
   return res.data.data
 }
 
+/** 类型化 PATCH：直接返回业务 data */
+export async function patch<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  const res = await request.patch<ApiResponse<T>>(url, data, config)
+  return res.data.data
+}
+
 /** 文件下载（导出/模板）：返回 Blob，由调用方触发浏览器下载 */
 export async function downloadBlob(
   url: string,

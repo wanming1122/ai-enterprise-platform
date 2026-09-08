@@ -35,7 +35,8 @@ class AIConversation(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sys_user.id"), nullable=False, comment="归属用户")
-    title: Mapped[str | None] = mapped_column(String(64), comment="会话标题（取首问）")
+    title: Mapped[str | None] = mapped_column(String(64), comment="会话标题（取首问，可重命名）")
+    pinned: Mapped[int] = mapped_column(TINYINT, default=0, nullable=False, comment="1置顶 0普通（列表置顶优先）")
     status: Mapped[int] = mapped_column(TINYINT, default=1, nullable=False, comment="1正常 2软删除")
     source: Mapped[str] = mapped_column(String(16), default="kb", nullable=False, comment="会话来源：kb问答调试 / ai AI助手")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
