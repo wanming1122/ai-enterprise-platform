@@ -5,20 +5,27 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
+  KeyOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  ProfileOutlined,
   RobotOutlined,
   SettingOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import BreadcrumbNav from '@/components/Breadcrumb'
+import ForceChangePassword from '@/components/ForceChangePassword'
 import { useUserStore } from '@/stores/user'
 import { preloadComponent, preloadPages } from '@/router/viewLoaders'
 import type { MenuItem } from '@/types'
 
 const { Sider, Header, Content } = Layout
+
+/** 主导航 Sider 展开宽度：内容区用此常量做固定左边距，折叠/展开不改变右侧内容宽度 */
+const SIDER_WIDTH = 200
 
 /** 菜单图标映射：后端存储的图标名 → antd 图标组件 */
 const iconMap: Record<string, ReactNode> = {
@@ -74,6 +81,30 @@ export default function MainLayout() {
     navigate('/login')
   }
 
+  // Header右侧用户下拉菜单项
+  const userMenuItems: MenuProps['items'] = [
+    {
+      key: 'profile',
+      icon: <ProfileOutlined />,
+      label: '个人资料',
+      onClick: () => navigate('/profile/info'),
+    },
+    {
+      key: 'password',
+      icon: <KeyOutlined />,
+      label: '修改密码',
+      onClick: () => navigate('/profile/password'),
+    },
+    { type: 'divider' },
+    {
+      key: 'logout',
+      icon: <LogoutOutlined />,
+      label: '退出登录',
+      danger: true,
+      onClick: handleLogout,
+    },
+  ]
+
   /** 授权菜单 → path→component 映射（菜单点击预载用）与全部页面 component（空闲预载用） */
   const pageIndex = useMemo(() => {
     const byPath = new Map<string, string>()
@@ -104,10 +135,28 @@ export default function MainLayout() {
   }
 
   const userName = userInfo?.nickname || userInfo?.username || '未登录'
+  // 强制改密守卫：管理员重置密码后（need_reset_pwd=1）内容区整体替换为改密页，
+  // 修改成功前不允许访问任何业务页面（顶栏退出登录仍可用）
+  const mustChangePwd = userInfo?.need_reset_pwd === 1
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible collapsed={collapsed} trigger={null}>
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
+      <Sider
+        collapsible
+        collapsed={collapsed}
+        trigger={null}
+        width={SIDER_WIDTH}
+        collapsedWidth={80}
+        style={{
+          position: 'fixed',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          height: '100vh',
+          zIndex: 100,
+          overflow: 'auto',
+        }}
+      >
         <div
           style={{
             height: 56,
@@ -132,7 +181,7 @@ export default function MainLayout() {
           onClick={handleMenuClick}
         />
       </Sider>
-      <Layout>
+      <Layout style={{ marginLeft: SIDER_WIDTH, height: '100%' }}>
         <Header
           style={{
             background: token.colorBgContainer,
@@ -152,24 +201,25 @@ export default function MainLayout() {
             </Typography.Text>
             <Typography.Text type="secondary">企业管理系统</Typography.Text>
           </Space>
-          <Dropdown
-            menu={{
-              items: [
-                { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: handleLogout },
-              ],
-            }}
-          >
+          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
             <Space style={{ cursor: 'pointer' }}>
-              <Avatar size="small" icon={<UserOutlined />} />
+              <Avatar size="small" icon={<UserOutlined />} src={userInfo?.avatar} />
               <span>{userName}</span>
             </Space>
           </Dropdown>
         </Header>
-        <Content style={{ margin: 16 }}>
-          {/* 局部 Suspense：页面懒加载挂起时仅内容区空白兜底，侧栏/顶栏保持稳定，不再整屏闪现加载圈 */}
-          <Suspense fallback={null}>
-            <Outlet />
-          </Suspense>
+        <Content style={{ margin: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
+          {mustChangePwd ? (
+            <ForceChangePassword />
+          ) : (
+            <>
+              <BreadcrumbNav />
+              {/* 局部 Suspense：页面懒加载挂起时仅内容区空白兜底，侧栏/顶栏保持稳定，不再整屏闪现加载圈 */}
+              <Suspense fallback={null}>
+                <Outlet />
+              </Suspense>
+            </>
+          )}
         </Content>
       </Layout>
     </Layout>

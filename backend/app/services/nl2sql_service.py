@@ -29,19 +29,41 @@ MAX_LIMIT = 100
 _TABLE_DDL = (
     "product(id BIGINT 主键, name VARCHAR(64) 产品名称, category VARCHAR(32) 产品分类, "
     "price DECIMAL(10,2) 价格, stock INT 库存, description VARCHAR(255) 产品描述, "
-    "status TINYINT 状态(1上架 0下架 2已删除), created_at DATETIME 创建时间, updated_at DATETIME 更新时间)"
+    "status TINYINT 状态(1上架 0下架 2已删除), created_at DATETIME 创建时间, updated_at DATETIME 更新时间); "
+    "sys_user(id BIGINT 主键, username VARCHAR(64) 登录账号, nickname VARCHAR(64) 昵称, "
+    "real_name VARCHAR(64) 真实姓名, gender TINYINT 性别(0未知 1男 2女), "
+    "email VARCHAR(128) 邮箱, phone VARCHAR(20) 手机号, "
+    "department_id BIGINT 部门ID外键关联sys_department表, position_id BIGINT 职位ID外键关联sys_position表, "
+    "status TINYINT 状态(1正常 0停用 2已删除), created_at DATETIME 创建时间); "
+    "att_record(id BIGINT 主键, user_id BIGINT 员工ID外键关联sys_user表, dept_id BIGINT 部门快照, "
+    "att_date DATE 考勤日期, check_in TIME 签到时间, check_out TIME 签退时间, "
+    "status VARCHAR(16) 状态(normal正常/late迟到/early_leave早退/miss_check漏打卡/absent旷工/leave请假/business_trip出差), "
+    "location VARCHAR(128) 考勤地点, remark VARCHAR(255) 备注, created_at DATETIME 创建时间); "
+    "sal_payroll(id BIGINT 主键, user_id BIGINT 员工ID外键关联sys_user表, year_month VARCHAR(7) 月份YYYY-MM格式, "
+    "position_name VARCHAR(64) 职位名称, base_salary DECIMAL(10,2) 基本工资, "
+    "attendance_adjust DECIMAL(10,2) 考勤增减, manual_adjust DECIMAL(10,2) 手动奖惩, "
+    "total_salary DECIMAL(10,2) 应发合计, status TINYINT 状态(0草稿 1已确认 2已发放), "
+    "created_at DATETIME 创建时间)"
 )
+
+_ALLOWED_TABLES = {"product", "sys_user", "att_record", "sal_payroll"}
 
 _SYSTEM_PROMPT = (
     "你是MySQL SQL生成器，只负责把用户的自然语言转换为一条SELECT查询语句。\n"
-    f"可用表（仅此一张）：{_TABLE_DDL}\n"
+    f"可用表（共四张）：{_TABLE_DDL}\n"
     "严格要求：\n"
     "1. 只输出一条SELECT语句，必须以SELECT开头；禁止INSERT/UPDATE/DELETE/DDL等任何非查询语句。\n"
-    "2. 只允许查询product表；禁止JOIN或子查询访问其他表，禁止访问系统库。\n"
-    "3. 结果必须排除已删除数据：WHERE条件始终包含 status != 2（用户指定状态时同时满足）。\n"
-    "4. 语句必须以LIMIT结尾，且LIMIT返回行数不超过100。\n"
-    "5. 不使用库名或表别名前缀限定列名，不使用注释，末尾不加分号。\n"
-    "6. 只输出SQL文本本身：不要任何解释、不要markdown代码块围栏、不要多余字符。"
+    "2. 只允许查询上述四张表（product/sys_user/att_record/sal_payroll），禁止访问其他表，禁止访问系统库。\n"
+    "3. 可以使用JOIN关联上述四张表进行跨表查询，如：查询某部门的考勤记录可JOIN sys_user和att_record。\n"
+    "4. 结果必须排除已删除数据：product表用status!=2，sys_user表用status!=2，其他表无软删除字段无需过滤。\n"
+    "5. 语句必须以LIMIT结尾，且LIMIT返回行数不超过100。\n"
+    "6. 不使用库名前缀限定列名，不使用注释，末尾不加分号。可以使用表别名。\n"
+    "7. 只输出SQL文本本身：不要任何解释、不要markdown代码块围栏、不要多余字符。\n"
+    "常见查询场景：\n"
+    "- 产品库存/价格/分类 → 查询product表\n"
+    "- 员工信息/部门/职位 → 查询sys_user表，可JOIN department和position\n"
+    "- 考勤记录/迟到早退 → 查询att_record表，可JOIN sys_user获取员工信息\n"
+    "- 工资单/薪资统计 → 查询sal_payroll表，可JOIN sys_user获取员工信息"
 )
 
 
@@ -129,11 +151,20 @@ def validate_and_normalize_sql(raw: str) -> str:
     if bad:
         _reject(f"SQL包含禁止的关键词或对象：{bad.group(0)}")
     if _QUALIFIED_RE.search(stripped):
-        _reject("不允许使用库名/别名前缀限定（仅可查询product表）")
+        # 允许使用表别名，但不允许使用库名前缀
+        # 检查是否有db.table格式的引用
+        for match in re.finditer(r"([a-zA-Z_]\w*)\s*\.\s*([a-zA-Z_]\w*)", stripped):
+            prefix = match.group(1).lower()
+            # 如果前缀不是已知表名，则认为是库名前缀，拒绝
+            if prefix not in _ALLOWED_TABLES and prefix not in {"p", "u", "a", "s"}:  # 允许常见别名
+                _reject("不允许使用库名前缀限定（仅可查询product/sys_user/att_record/sal_payroll表）")
 
     tables = [name.lower() for _, name in _TABLE_REF_RE.findall(stripped)]
-    if not tables or any(t != "product" for t in tables):
-        _reject("仅允许查询product表")
+    if not tables:
+        _reject("SQL中未发现查询的表")
+    invalid_tables = [t for t in tables if t not in _ALLOWED_TABLES]
+    if invalid_tables:
+        _reject(f"禁止查询以下表：{', '.join(invalid_tables)}，仅允许查询product/sys_user/att_record/sal_payroll")
 
     tail = _LIMIT_TAIL_RE.search(sql)
     offset_any = re.search(r"\boffset\b", stripped, re.I)

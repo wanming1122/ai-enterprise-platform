@@ -14,7 +14,7 @@ import {
 } from 'antd'
 import { useCallback, useEffect, useMemo, useState, type Key } from 'react'
 import HasPermission from '@/components/HasPermission'
-import { ROLE_TYPE_TEXT, roleApi, type RoleForm, type RoleItem } from '@/api/role'
+import { ROLE_TYPE_TEXT, DATA_SCOPE_TEXT, roleApi, type RoleForm, type RoleItem } from '@/api/role'
 import { menuApi, type MenuItem2 } from '@/api/menu'
 
 /** 菜单树 → Tree treeData */
@@ -70,6 +70,7 @@ export default function RoleManage() {
       name: record.name,
       code: record.code,
       role_type: record.role_type,
+      data_scope: record.data_scope,
       description: record.description,
     })
     setModalOpen(true)
@@ -135,6 +136,15 @@ export default function RoleManage() {
       dataIndex: 'role_type',
       width: 110,
       render: (t: number) => <Tag>{ROLE_TYPE_TEXT[t] || '未知'}</Tag>,
+    },
+    {
+      title: '数据范围',
+      dataIndex: 'data_scope',
+      width: 100,
+      render: (s: number) => {
+        const colorMap: Record<number, string> = { 1: 'orange', 2: 'blue', 3: 'green' }
+        return <Tag color={colorMap[s] || 'default'}>{DATA_SCOPE_TEXT[s] || '未知'}</Tag>
+      },
     },
     { title: '描述', dataIndex: 'description', render: (v: string) => v || '-' },
     { title: '绑定用户数', dataIndex: 'user_count', width: 100 },
@@ -229,6 +239,13 @@ export default function RoleManage() {
             <Select>
               <Select.Option value={2}>普通管理员</Select.Option>
               <Select.Option value={3}>普通员工</Select.Option>
+            </Select>
+          </Form.Item>
+          <Form.Item name="data_scope" label="数据范围" tooltip="控制该角色用户可查看的数据范围：仅本人、本部门或全部数据">
+            <Select>
+              <Select.Option value={1}>仅本人</Select.Option>
+              <Select.Option value={2}>本部门</Select.Option>
+              <Select.Option value={3}>全部</Select.Option>
             </Select>
           </Form.Item>
           <Form.Item name="description" label="描述">

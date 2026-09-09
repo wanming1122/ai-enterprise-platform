@@ -5,11 +5,16 @@ nl2sql 产品数据查询）循环，决策完成后进入 generate 节点以 SS
 LLM 调用统一走 llm_client（httpx 直连 OpenAI 兼容接口）：推理型模型回放 tool_calls
 必须携带 reasoning_content，由 chat_with_tools 返回的 dict 原样回放满足。
 事件协议与 kb_chat_service 对齐：meta/tool/reasoning/message/citations/done/error。
+
+M10：全链路异步化（async 节点 + astream + achat_*），客户端断连可真正取消 LLM 调用；
+历史回放带工具结果摘要与 token 预算；引用编号越界校验；kb_ids 检索范围与 source 会话来源。
 """
+import asyncio
 import json
 import operator
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import Annotated, Literal, TypedDict
 
 from fastapi import HTTPException
@@ -20,9 +25,10 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, StateGraph
 
 from app.models.ai import AIConversation, AIMessage
+from app.core.config import settings
 from app.models.kb import KBKnowledgeBase
 from app.models.nl2sql import NL2SQLRecord
-from app.services import kb_rag_service, llm_client, nl2sql_service, server_admin_service
+from app.services import ai_memory_service, ai_model_service, kb_rag_service, llm_client, nl2sql_service, server_admin_service
 from app.services.operation_log_service import write_log
 from app.db.session import SessionLocal
 
@@ -30,6 +36,8 @@ HISTORY_ROUNDS = 4          # 多轮上下文回放最近 4 轮 user/assistant �
 MAX_TOOL_ROUNDS = 6         # 单次提问工具调用轮次上限
 TOOL_RESULT_MAX_CHARS = 4000
 TOOL_STORE_MAX_CHARS = 2000  # tool 消息持久化截断长度
+HISTORY_TOKEN_BUDGET = 6000  # 历史回放 token 预算：超出从最旧轮截断
+TOOL_SUMMARY_CHARS = 300     # 历史回放中 tool 结果摘要长度
 
 # 多模态图片约束（Data URL 直存方案，与头像一致；SSE 请求体携带）
 _IMAGE_RE = re.compile(r"^data:image/(png|jpe?g|webp);base64,[A-Za-z0-9+/=\s]+$")
@@ -109,7 +117,12 @@ TOOLS_SPEC = [
         "type": "function",
         "function": {
             "name": "nl2sql",
-            "description": "查询产品数据表(product)，返回实时数据。回答产品库存、价格、分类、数量等数据问题前必须先调用。",
+            "description": (
+                "查询业务数据库的实时数据，支持四张表：product(产品)、sys_user(员工)、"
+                "att_record(考勤记录)、sal_payroll(工资单)。"
+                "回答产品库存价格、员工信息、考勤记录、薪资统计等结构化数据问题前必须先调用。"
+                "支持跨表JOIN查询，如查询某部门的考勤情况。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"question": {"type": "string", "description": "自然语言数据问题"}},
@@ -120,10 +133,16 @@ TOOLS_SPEC = [
 ]
 
 AGENT_SYSTEM_PROMPT = (
-    "你是企业管理系统的AI助手，负责回答员工关于公司制度流程与产品数据的问题。可调用工具：\n"
+    "你是企业管理系统的AI助手，负责回答员工关于公司制度流程与业务数据的问题。可调用工具：\n"
     "1. retrieve：检索企业知识库（制度、流程、文档等），回答此类问题前先调用；\n"
-    "2. nl2sql：查询产品数据表(product)的实时数据（库存、价格、分类等），回答产品数据问题前先调用。\n"
-    "规则：每次只调用一个工具；工具结果足够时不要再调用；与制度、产品数据无关的问题直接回答，不调用工具。"
+    "2. nl2sql：查询业务数据库的实时数据，支持四张表：\n"
+    "   - product：产品信息（库存、价格、分类等）\n"
+    "   - sys_user：员工信息（姓名、部门、职位等）\n"
+    "   - att_record：考勤记录（签到、签退、迟到、早退等）\n"
+    "   - sal_payroll：工资单（基本工资、考勤增减、应发合计等）\n"
+    "   回答上述数据问题前先调用，支持跨表JOIN查询。\n"
+    "3. server_admin：只读探查服务器状态，仅当用户询问服务器相关问题时调用。\n"
+    "规则：每次只调用一个工具；工具结果足够时不要再调用；与制度、业务数据无关的问题直接回答，不调用工具。"
 )
 
 GENERATE_SYSTEM_PROMPT = (
@@ -148,8 +167,11 @@ class AgentState(TypedDict, total=False):
     context_chunks: list[dict]                       # 最近一次 retrieve 命中的切片
     citations: list[dict]                            # generate 产出的引用列表
     tool_trace: Annotated[list[dict], operator.add]  # 工具调用记录
+    usage_log: Annotated[list[dict], operator.add]   # 各次 LLM 调用的 token 用量（estimated 标记是否估算）
     rounds: int                                      # 已发生工具调用轮次
     user_id: int
+    model_id: int | None                             # 用户指定的生成模型配置ID（空则默认模型）
+    kb_ids: list[int] | None                         # 知识库检索范围（kb 问答调试页限定；空则全库）
     username: str
     deep_thinking: bool
     images: list[str]
@@ -158,28 +180,87 @@ class AgentState(TypedDict, total=False):
     reasoning: str
 
 
-def _agent_node(state: AgentState) -> dict:
+_IMAGE_TOKEN_ESTIMATE = 1000  # 单张图片的视觉 token 估算（base64 字符数与视觉计费无对应关系）
+
+
+def _estimate_question_tokens(question: str, images: list[str]) -> int:
+    """当前提问的 token 估算：图片按固定常量计，Data URL 文本不参与估算。"""
+    return ai_memory_service.estimate_tokens(question) + len(images) * _IMAGE_TOKEN_ESTIMATE
+
+
+def _estimate_messages_tokens(messages: list[dict]) -> int:
+    """消息列表的启发式 token 估算；多模态图片按固定常量计（base64 字符数换算会严重失真）。"""
+    total = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            imgs = 0
+            texts: list[str] = []
+            for p in content:
+                if isinstance(p, dict):
+                    if p.get("type") == "image_url":
+                        imgs += 1
+                    else:
+                        texts.append(str(p.get("text") or ""))
+            total += imgs * _IMAGE_TOKEN_ESTIMATE
+            total += ai_memory_service.estimate_tokens(" ".join(texts))
+        else:
+            total += ai_memory_service.estimate_tokens(str(content or ""))
+    return total
+
+
+async def _agent_node(state: AgentState) -> dict:
     """工具调用决策：达到轮次上限则不再调用工具，直接进入生成。"""
     if state.get("rounds", 0) >= MAX_TOOL_ROUNDS:
         return {"messages": [{"role": "assistant", "content": ""}]}
+    usage_out: dict = {}
+    mid = state.get("model_id")
     try:
-        msg = llm_client.chat_with_tools(state["messages"], TOOLS_SPEC, max_tokens=1536, temperature=0.2)
+        msg = await llm_client.achat_with_tools(
+            state["messages"], TOOLS_SPEC, max_tokens=1536,
+            usage_out=usage_out, model_id=mid,
+        )
     except HTTPException:
         if not state.get("images"):
             raise
         # 带图提问且模型不支持视觉输入时，退化纯文本重试一次
-        msg = llm_client.chat_with_tools(
-            _strip_images(state["messages"]), TOOLS_SPEC, max_tokens=1536, temperature=0.2
+        msg = await llm_client.achat_with_tools(
+            _strip_images(state["messages"]), TOOLS_SPEC, max_tokens=1536,
+            usage_out=usage_out, model_id=mid,
         )
-    return {"messages": [msg]}
+    if usage_out.get("total_tokens") is not None:
+        usage = {
+            "prompt_tokens": int(usage_out.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage_out.get("completion_tokens") or 0),
+            "cached_tokens": int(
+                ((usage_out.get("prompt_tokens_details") or {}).get("cached_tokens")) or 0
+            ),
+            "estimated": False,
+        }
+    else:  # 上游未回传 usage → 启发式估算
+        usage = {
+            "prompt_tokens": _estimate_messages_tokens(state["messages"]),
+            "completion_tokens": ai_memory_service.estimate_tokens(json.dumps(msg, ensure_ascii=False)),
+            "estimated": True,
+        }
+    return {"messages": [msg], "usage_log": [usage]}
 
 
-def _route_after_agent(state: AgentState) -> Literal["tools", "generate"]:
+def _route_after_agent(state: AgentState) -> Literal["tools", "generate", "direct"]:
     last = state["messages"][-1]
-    return "tools" if last.get("tool_calls") else "generate"
+    if last.get("tool_calls"):
+        return "tools"
+    # 已发生工具调用（如知识库检索）：必须走 generate 把检索正文注入 system 后再作答，
+    # 否则 direct 路径下模型只见过工具摘要行就编造答案、引用与正文不对应
+    if state.get("tool_trace"):
+        return "generate"
+    # agent 已直接回答（无工具调用且有正文）→ 直接下发，不再二次调用 LLM
+    if (last.get("content") or "").strip():
+        return "direct"
+    return "generate"
 
 
-def _tools_node(state: AgentState) -> dict:
+async def _tools_node(state: AgentState) -> dict:
     """执行本轮全部工具调用，tool 结果消息进入 messages，供 agent 复盘与 generate 引用。"""
     writer = get_stream_writer()
     db = SessionLocal()
@@ -196,7 +277,18 @@ def _tools_node(state: AgentState) -> dict:
             if name == "retrieve":
                 query = str(args.get("query") or "").strip()
                 writer({"kind": "tool", "tool": "retrieve", "query": query})
-                content, chunks = _tool_retrieve(db, query)
+                # RAG 检索含 Chroma/Embedding/LLM 网络调用：放线程池避免阻塞事件循环；
+                # 单工具失败降级为结果文案，不中断整轮问答
+                try:
+                    content, chunks = await asyncio.to_thread(
+                        _tool_retrieve, db, query, state.get("kb_ids")
+                    )
+                except HTTPException as exc:
+                    content = f"知识库检索暂不可用：{exc.detail}。请基于已有知识回答，并如实告知用户检索服务暂时不可用。"
+                    chunks = []
+                except Exception as exc:  # noqa: BLE001
+                    content = f"知识库检索执行异常：{exc}。请基于已有知识回答，并如实告知用户检索服务暂时不可用。"
+                    chunks = []
                 if chunks:
                     result = {"context_chunks": chunks}
                 else:
@@ -208,12 +300,22 @@ def _tools_node(state: AgentState) -> dict:
                     content = "当前账号没有服务器管理权限，无法执行该操作。请告知用户联系管理员开通。"
                 else:
                     writer({"kind": "tool", "tool": "server_admin", "action": action, "path": path})
-                    content = server_admin_service.run_action(action, {"path": path})
+                    # subprocess 最多 15s：放入线程池，避免阻塞事件循环
+                    content = await asyncio.to_thread(
+                        server_admin_service.run_action, action, {"path": path}
+                    )
                 result = {}
             elif name == "nl2sql":
                 question = str(args.get("question") or "").strip()
                 writer({"kind": "tool", "tool": "nl2sql", "question": question})
-                content = _tool_nl2sql(db, state, question)
+                # SQL 生成 + 只读执行为同步网络 I/O：放线程池避免阻塞事件循环；
+                # 失败降级为结果文案，不中断整轮问答
+                try:
+                    content = await asyncio.to_thread(_tool_nl2sql, db, state, question)
+                except HTTPException as exc:
+                    content = f"数据查询暂不可用：{exc.detail}。请如实告知用户当前无法查询产品数据。"
+                except Exception as exc:  # noqa: BLE001
+                    content = f"数据查询执行异常：{exc}。请如实告知用户当前无法查询产品数据。"
                 result = {}
             else:
                 content = f"未知工具：{name}"
@@ -225,9 +327,12 @@ def _tools_node(state: AgentState) -> dict:
         db.close()
 
 
-def _tool_retrieve(db: Session, query: str) -> tuple[str, list[dict]]:
-    """知识库检索：返回 (tool结果文本, 命中切片)。"""
-    kb_ids = list(db.scalars(select(KBKnowledgeBase.id).where(KBKnowledgeBase.status == 1)).all())
+def _tool_retrieve(db: Session, query: str, kb_ids: list[int] | None = None) -> tuple[str, list[dict]]:
+    """知识库检索：返回 (tool结果文本, 命中切片)。kb_ids 非空时限定检索范围（kb 问答调试）。"""
+    q = select(KBKnowledgeBase.id).where(KBKnowledgeBase.status == 1)
+    if kb_ids:
+        q = q.where(KBKnowledgeBase.id.in_(kb_ids))
+    kb_ids = list(db.scalars(q).all())
     if not kb_ids:
         return "当前没有启用的知识库，无法检索。请基于已有知识回答，并说明未检索到资料。", []
     if not query:
@@ -260,7 +365,18 @@ def _tool_nl2sql(db: Session, state: AgentState, question: str) -> str:
             f"结果JSON（最多前20行）：{preview}")
 
 
-def _generate_node(state: AgentState) -> dict:
+def _strip_invalid_citations(answer: str, citation_count: int) -> str:
+    """引用编号校验：剔除超出引用范围的 [n] 标注（防止模型编造编号）。"""
+    if citation_count <= 0:
+        return re.sub(r"\[\d+\]", "", answer)
+
+    def _repl(m: re.Match) -> str:
+        return m.group(0) if 1 <= int(m.group(1)) <= citation_count else ""
+
+    return re.sub(r"\[(\d+)\]", _repl, answer)
+
+
+async def _generate_node(state: AgentState) -> dict:
     """最终回答：流式产出（custom 事件逐 delta 上报），引用随流下发。"""
     writer = get_stream_writer()
     chunks = state.get("context_chunks") or []
@@ -272,35 +388,62 @@ def _generate_node(state: AgentState) -> dict:
     deep = state.get("deep_thinking", False)
     answer: list[str] = []
     reasoning: list[str] = []
+    usage_acc = {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "has_real": False}
 
-    def _emit(kind: str, delta: str) -> None:
-        if kind == "reasoning":
-            if deep:
-                reasoning.append(delta)
-                writer({"kind": "reasoning", "delta": delta})
-        else:
-            answer.append(delta)
-            writer({"kind": "message", "delta": delta})
+    async def _consume_stream(stream) -> None:
+        """消费流式输出：正文/思考增量下发，usage 累计（上游支持时为真实值）。
 
+        stream 为异步生成器（achat_stream），必须用 async for 消费。
+        """
+        async for kind, delta in stream:
+            if kind == "usage":
+                usage_acc["prompt_tokens"] += int(delta.get("prompt_tokens") or 0)
+                usage_acc["completion_tokens"] += int(delta.get("completion_tokens") or 0)
+                usage_acc["cached_tokens"] += int(
+                    ((delta.get("prompt_tokens_details") or {}).get("cached_tokens")) or 0
+                )
+                usage_acc["has_real"] = True
+            elif kind == "reasoning":
+                if deep:
+                    reasoning.append(delta)
+                    writer({"kind": "reasoning", "delta": delta})
+            else:
+                answer.append(delta)
+                writer({"kind": "message", "delta": delta})
+
+    mid = state.get("model_id")
     try:
         try:
-            for kind, delta in llm_client.chat_stream(msgs, max_tokens=3072, temperature=0.3):
-                _emit(kind, delta)
+            await _consume_stream(llm_client.achat_stream(msgs, max_tokens=3072, model_id=mid))
         except HTTPException:
             if not state.get("images"):
                 raise
             # 带图提问且模型不支持视觉输入（请求即被拒，尚未产出增量）时，退化纯文本重试
             answer.clear()
             reasoning.clear()
-            for kind, delta in llm_client.chat_stream(_strip_images(msgs), max_tokens=3072, temperature=0.3):
-                _emit(kind, delta)
+            usage_acc.update({"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "has_real": False})
+            await _consume_stream(llm_client.achat_stream(_strip_images(msgs), max_tokens=3072, model_id=mid))
     except HTTPException as exc:
         writer({"kind": "error", "message": str(exc.detail)})
         return {"answer": "", "reasoning": "", "citations": [], "error": str(exc.detail)}
+    if usage_acc["has_real"]:
+        usage = {
+            "prompt_tokens": usage_acc["prompt_tokens"],
+            "completion_tokens": usage_acc["completion_tokens"],
+            "cached_tokens": usage_acc["cached_tokens"],
+            "estimated": False,
+        }
+    else:  # 上游未下发 usage → 启发式估算
+        usage = {
+            "prompt_tokens": _estimate_messages_tokens(msgs),
+            "completion_tokens": ai_memory_service.estimate_tokens("".join(answer)),
+            "estimated": True,
+        }
     citations = _build_citations(chunks)
+    final_answer = _strip_invalid_citations("".join(answer), len(citations))
     if citations:
         writer({"kind": "citations", "citations": citations})
-    return {"answer": "".join(answer), "reasoning": "".join(reasoning), "citations": citations}
+    return {"answer": final_answer, "reasoning": "".join(reasoning), "citations": citations, "usage_log": [usage]}
 
 
 def _build_citations(chunks: list[dict]) -> list[dict]:
@@ -317,15 +460,30 @@ def _build_citations(chunks: list[dict]) -> list[dict]:
     ]
 
 
+def _direct_node(state: AgentState) -> dict:
+    """Agent 已直接回答（无工具调用），直接下发其内容，不二次调用 LLM。"""
+    writer = get_stream_writer()
+    last = state["messages"][-1]
+    citations = _build_citations(state.get("context_chunks") or [])
+    content = _strip_invalid_citations(last.get("content") or "", len(citations))
+    if content:
+        writer({"kind": "message", "delta": content})
+    if citations:
+        writer({"kind": "citations", "citations": citations})
+    return {"answer": content, "reasoning": last.get("reasoning_content") or "", "citations": citations}
+
+
 def _build_graph():
     g = StateGraph(AgentState)
     g.add_node("agent", _agent_node)
     g.add_node("tools", _tools_node)
     g.add_node("generate", _generate_node)
+    g.add_node("direct", _direct_node)
     g.set_entry_point("agent")
-    g.add_conditional_edges("agent", _route_after_agent, {"tools": "tools", "generate": "generate"})
+    g.add_conditional_edges("agent", _route_after_agent, {"tools": "tools", "generate": "generate", "direct": "direct"})
     g.add_edge("tools", "agent")
     g.add_edge("generate", END)
+    g.add_edge("direct", END)
     return g.compile()
 
 
@@ -339,32 +497,97 @@ def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def chat_sse(
+def _build_history(db: Session, conversation_id: int) -> list[dict]:
+    """构建历史回放：最近若干条消息，tool 结果以摘要前缀并入其后的 assistant 消息，
+    并按 token 预算从最旧侧截断（与真实请求口径一致：仅最近 HISTORY_ROUNDS 轮）。"""
+    recent = db.scalars(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conversation_id)
+        .order_by(AIMessage.id.desc())
+        .limit(HISTORY_ROUNDS * 4)
+    ).all()
+    recent.reverse()
+    history: list[dict] = []
+    pending_tools: list[str] = []
+    for m in recent:
+        if m.role == "user":
+            history.append({"role": "user", "content": m.content or ""})
+        elif m.role == "tool":
+            pending_tools.append((m.content or "")[:TOOL_SUMMARY_CHARS])
+        elif m.role == "assistant":
+            content = m.content or ""
+            if pending_tools:
+                content = "[此前工具结果] " + " | ".join(pending_tools) + "\n" + content
+                pending_tools = []
+            history.append({"role": "assistant", "content": content})
+    # token 预算：超出从最旧侧按整轮（user+assistant 一对）截断，
+    # 逐条弹出可能留下「无前置 user 的悬空 assistant」，影响模型表现
+    while len(history) > 2:
+        used = sum(ai_memory_service.estimate_tokens(str(h["content"])) for h in history)
+        if used <= HISTORY_TOKEN_BUDGET:
+            break
+        del history[:2]
+    return history
+
+
+async def chat_sse(
     user_id: int, username: str, *,
     question: str, conversation_id: int | None, deep_thinking: bool,
     images: list[str] | None = None, enable_server_admin: bool = False,
+    result_holder: dict | None = None, model_id: int | None = None,
+    kb_ids: list[int] | None = None, source: str = "ai",
+    request=None,
 ):
-    """SSE 生成器：建/续会话 → 运行 LangGraph 图并转发 custom 事件 → 持久化消息。"""
+    """SSE 生成器（异步）：建/续会话 → 运行 LangGraph 图并转发 custom 事件 → 持久化消息。
+
+    result_holder 由路由层传入并转交 BackgroundTask：流结束后回填 ok/conversation_id，
+    供异步记忆提取使用（客户端在 done 后断开也不影响后台提取）。
+    request 用于断连检测：客户端中断后尽快取消 LLM 调用，避免 token 白白消耗。
+    """
     db = SessionLocal()
+    started = time.perf_counter()
     try:
+        # 当前生效的生成模型配置：取真实上下文窗口与模型名（未配置窗口则回退全局常量）
+        try:
+            llm_cfg = ai_model_service.resolve_llm_config(model_id)
+            context_window = int(llm_cfg.get("context_window") or 0) or settings.CONTEXT_WINDOW_TOKENS
+            model_name = str(llm_cfg.get("model_name") or "")
+        except HTTPException:
+            context_window = settings.CONTEXT_WINDOW_TOKENS
+            model_name = ""
         if conversation_id:
             conv = db.get(AIConversation, conversation_id)
             if conv is None or conv.status == 2 or conv.user_id != user_id:
                 raise HTTPException(status_code=404, detail="会话不存在")
         else:
-            conv = AIConversation(user_id=user_id, title=question[:32] or "新会话", status=1, source="ai")
+            conv = AIConversation(user_id=user_id, title=question[:32] or "新会话", status=1, source=source)
             db.add(conv)
             db.commit()
         yield _sse("meta", {"conversation_id": conv.id})
+        if request is not None and await request.is_disconnected():
+            return
 
-        recent = db.scalars(
-            select(AIMessage)
-            .where(AIMessage.conversation_id == conv.id, AIMessage.role.in_(["user", "assistant"]))
-            .order_by(AIMessage.id.desc())
-            .limit(HISTORY_ROUNDS * 2)
-        ).all()
-        recent.reverse()
-        history = [{"role": m.role, "content": m.content} for m in recent]
+        history = _build_history(db, conv.id)
+
+        # 长期记忆召回：按当前问题检索本人记忆注入 system prompt（失败静默降级；
+        # embedding 为网络调用，放入线程池避免阻塞事件循环）
+        system_prompt = AGENT_SYSTEM_PROMPT
+        memories: list[dict] = []
+        if ai_memory_service.memory_enabled(db, user_id):
+            try:
+                memories = await asyncio.to_thread(ai_memory_service.recall, db, user_id, question)
+            except Exception:
+                memories = []
+            injection = ai_memory_service.format_injection(memories)
+            if injection:
+                system_prompt += injection
+        if memories:
+            yield _sse("memory", {
+                "count": len(memories),
+                "items": [{"id": m["id"], "type": m["memory_type"], "content": m["content"][:60]} for m in memories],
+            })
+        if request is not None and await request.is_disconnected():
+            return
 
         imgs = validate_images(images or [])
         db.add(AIMessage(
@@ -373,17 +596,33 @@ def chat_sse(
         ))
         db.commit()
 
+        init_messages = [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": _user_content(question, imgs)},
+        ]
+        # 上下文容量分类明细（启发式估算；工具结果在图执行后累计）
+        injection_text = ai_memory_service.format_injection(memories)
+        breakdown: list[dict] = [
+            {"label": "系统提示词", "tokens": ai_memory_service.estimate_tokens(AGENT_SYSTEM_PROMPT)},
+            {"label": "长期记忆", "tokens": ai_memory_service.estimate_tokens(injection)},
+            {"label": "历史消息", "tokens": sum(ai_memory_service.estimate_tokens(str(m.get("content") or "")) for m in history)},
+            {
+                "label": "当前提问",
+                "tokens": _estimate_question_tokens(question, imgs),
+            },
+            {"label": "工具定义", "tokens": ai_memory_service.estimate_tokens(json.dumps(TOOLS_SPEC, ensure_ascii=False))},
+        ]
         init_state: AgentState = {
-            "messages": [
-                {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-                *history,
-                {"role": "user", "content": _user_content(question, imgs)},
-            ],
+            "messages": init_messages,
             "context_chunks": [],
             "citations": [],
             "tool_trace": [],
+            "usage_log": [],
             "rounds": 0,
             "user_id": user_id,
+            "model_id": model_id,
+            "kb_ids": kb_ids,
             "username": username,
             "deep_thinking": deep_thinking,
             "images": imgs,
@@ -391,9 +630,11 @@ def chat_sse(
         }
         final_state: AgentState = {}
         try:
-            for mode, payload in _GRAPH.stream(
+            async for mode, payload in _GRAPH.astream(
                 init_state, stream_mode=["custom", "values"], config={"recursion_limit": 50}
             ):
+                if request is not None and await request.is_disconnected():
+                    return  # 客户端断连：取消图执行，LLM 调用随之被真正中断
                 if mode == "custom":
                     kind = payload.get("kind")
                     if kind == "reasoning":
@@ -416,6 +657,18 @@ def chat_sse(
             yield _sse("error", {"message": f"处理失败：{exc}"})
             return
 
+        # 用量统计：聚合本轮全部 LLM 调用（agent 决策 N 次 + generate 一次），随 assistant 消息落库供成本监控
+        usage_log = final_state.get("usage_log") or []
+        estimated = any(u.get("estimated") for u in usage_log)
+        prompt_total = sum(int(u.get("prompt_tokens") or 0) for u in usage_log)
+        usage_stats = {
+            "prompt_tokens": prompt_total,
+            "completion_tokens": sum(int(u.get("completion_tokens") or 0) for u in usage_log),
+            "estimated": estimated,
+            "model": model_name,
+        }
+        usage_stats["total_tokens"] = usage_stats["prompt_tokens"] + usage_stats["completion_tokens"]
+
         # 先落 tool 消息再落 assistant 终答，保证时间线为：工具调用 → 最终回答
         for m in final_state.get("messages", []):
             if m.get("role") == "tool":
@@ -429,11 +682,49 @@ def chat_sse(
             content=final_state.get("answer", ""),
             reasoning_content=(final_state.get("reasoning") or None) if deep_thinking else None,
             citations=final_state.get("citations") or None,
+            usage=usage_stats,
         )
         db.add(assistant)
         conv.updated_at = datetime.now()
         db.commit()
-        yield _sse("done", {"conversation_id": conv.id, "message_id": assistant.id})
+        # 缓存命中率（上游 prompt_tokens_details.cached_tokens 支持时才有值）
+        cached_total = sum(int(u.get("cached_tokens") or 0) for u in usage_log)
+        # 工具结果容量（本轮 tool 消息），并入分类明细与总容量
+        tool_results = [
+            m for m in final_state.get("messages", []) if m.get("role") == "tool"
+        ]
+        breakdown.append({
+            "label": "工具结果",
+            "tokens": sum(ai_memory_service.estimate_tokens(str(m.get("content") or "")) for m in tool_results),
+        })
+        estimated_total = sum(b["tokens"] for b in breakdown)
+        # 「上下文占用」取单次最大 prompt：agent 每轮决策都会重发完整历史，
+        # prompt_total 是全轮累加的计费口径，直接当占用会高估（多轮后误报超窗口）
+        prompt_max = max((int(u.get("prompt_tokens") or 0) for u in usage_log), default=0)
+        # 真实值校准：上游回传 usage 时，用单次最大 prompt 作已用量，
+        # 并按比例缩放分类明细使合计与已用量一致（估算仅作兜底）
+        if not estimated and prompt_max > 0 and estimated_total > 0:
+            factor = prompt_max / estimated_total
+            breakdown = [{**b, "tokens": max(1, round(b["tokens"] * factor))} for b in breakdown]
+            context_used = prompt_max
+        else:
+            context_used = estimated_total
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        done_payload = {
+            "conversation_id": conv.id,
+            "message_id": assistant.id,
+            "usage": usage_stats,
+            "duration_ms": duration_ms,
+            "context_tokens": context_used,
+            "context_window": context_window,
+            "context_breakdown": breakdown,
+            "memory_count": len(memories),
+        }
+        if prompt_total > 0 and cached_total > 0:
+            done_payload["cache_hit_rate"] = round(cached_total / prompt_total, 4)
+        yield _sse("done", done_payload)
+        if result_holder is not None:
+            result_holder.update(ok=True, conversation_id=conv.id)
     except HTTPException as exc:
         yield _sse("error", {"message": str(exc.detail)})
     finally:
@@ -462,13 +753,16 @@ def serialize_message(m: AIMessage) -> dict:
         "tool_name": m.tool_name,
         "citations": m.citations,
         "attachments": m.attachments,
+        "usage": m.usage,
         "created_at": m.created_at.isoformat(),
     }
 
 
-def list_conversations(db: Session, *, user_id: int, page: int = 1, page_size: int = 20) -> tuple[list[dict], int]:
+def list_conversations(
+    db: Session, *, user_id: int, page: int = 1, page_size: int = 20, source: str = "ai"
+) -> tuple[list[dict], int]:
     q = select(AIConversation).where(
-        AIConversation.user_id == user_id, AIConversation.status != 2, AIConversation.source == "ai"
+        AIConversation.user_id == user_id, AIConversation.status != 2, AIConversation.source == source
     )
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
     # 置顶优先，其次按最近活跃（updated_at）倒序，供会话时间分组使用
@@ -489,12 +783,107 @@ def _get_own_conversation(db: Session, conversation_id: int, user_id: int) -> AI
     return conv
 
 
+def _estimate_conversation_context(messages: list[AIMessage]) -> dict:
+    """会话历史上下文估算（与 chat_sse 同口径）。
+
+    不含长期记忆注入——注入内容需向量召回，打开会话时不做，前端浮层可见该项缺省。
+    """
+    recent = [m for m in messages if m.role in ("user", "assistant")][-HISTORY_ROUNDS * 2 :]
+    tool_results = [m for m in messages if m.role == "tool"]
+    breakdown = [
+        {"label": "系统提示词", "tokens": ai_memory_service.estimate_tokens(AGENT_SYSTEM_PROMPT)},
+        {
+            "label": "工具定义",
+            "tokens": ai_memory_service.estimate_tokens(json.dumps(TOOLS_SPEC, ensure_ascii=False)),
+        },
+        {"label": "历史消息", "tokens": sum(ai_memory_service.estimate_tokens(m.content or "") for m in recent)},
+        {
+            "label": "工具结果",
+            "tokens": sum(ai_memory_service.estimate_tokens(m.content or "") for m in tool_results),
+        },
+    ]
+    return {"total": sum(b["tokens"] for b in breakdown), "breakdown": breakdown}
+
+
+MESSAGE_PAGE_SIZE = 100  # 会话消息分页大小（倒序取最近 N 条，前端可上滑加载更早）
+
+
 def get_conversation(db: Session, conversation_id: int, operator: object) -> dict:
+    """会话详情：最近 MESSAGE_PAGE_SIZE 条消息 + has_more（更早消息走 messages 接口分页取）。"""
     conv = _get_own_conversation(db, conversation_id, operator.id)
-    messages = db.scalars(
-        select(AIMessage).where(AIMessage.conversation_id == conv.id).order_by(AIMessage.id)
+    total = db.scalar(
+        select(func.count()).select_from(AIMessage).where(AIMessage.conversation_id == conv.id)
+    ) or 0
+    latest = db.scalars(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conv.id)
+        .order_by(AIMessage.id.desc())
+        .limit(MESSAGE_PAGE_SIZE)
     ).all()
-    return {**serialize_conversation(conv), "messages": [serialize_message(m) for m in messages]}
+    latest.reverse()
+    return {
+        **serialize_conversation(conv),
+        "messages": [serialize_message(m) for m in latest],
+        "message_total": total,
+        "has_more": total > MESSAGE_PAGE_SIZE,
+        # 上下文容量估算（与下一轮真实请求同口径：最近4轮 + 固定开销，不含记忆注入）
+        "context_usage": _estimate_conversation_context(latest),
+    }
+
+
+def list_messages_before(
+    db: Session, conversation_id: int, operator: object, *, before_id: int, limit: int = MESSAGE_PAGE_SIZE
+) -> dict:
+    """加载指定消息 ID 之前的更早消息（倒序取 limit 条后正序返回）。"""
+    conv = _get_own_conversation(db, conversation_id, operator.id)
+    older = db.scalars(
+        select(AIMessage)
+        .where(AIMessage.conversation_id == conv.id, AIMessage.id < before_id)
+        .order_by(AIMessage.id.desc())
+        .limit(limit)
+    ).all()
+    older.reverse()
+    has_more = bool(older) and older[0].id > (
+        db.scalar(select(AIMessage.id).where(AIMessage.conversation_id == conv.id).order_by(AIMessage.id.asc()).limit(1))
+        or 0
+    )
+    return {"messages": [serialize_message(m) for m in older], "has_more": has_more}
+
+
+def usage_summary(db: Session, user_id: int, *, days: int = 30) -> dict:
+    """用量汇总（成本监控）：聚合最近 N 天当前用户 assistant 消息上的 usage 统计。"""
+    since = datetime.now() - timedelta(days=days)
+    rows = db.scalars(
+        select(AIMessage).where(
+            AIMessage.role == "assistant",
+            AIMessage.usage.is_not(None),
+            AIMessage.created_at >= since,
+            AIMessage.conversation_id.in_(
+                select(AIConversation.id).where(AIConversation.user_id == user_id)
+            ),
+        )
+    ).all()
+    by_day: dict[str, int] = {}
+    by_model: dict[str, int] = {}
+    prompt_total = completion_total = requests = 0
+    for m in rows:
+        u = m.usage or {}
+        tokens = int(u.get("total_tokens") or 0)
+        prompt_total += int(u.get("prompt_tokens") or 0)
+        completion_total += int(u.get("completion_tokens") or 0)
+        requests += 1
+        day = m.created_at.strftime("%Y-%m-%d")
+        by_day[day] = by_day.get(day, 0) + tokens
+        model = str(u.get("model") or "unknown")
+        by_model[model] = by_model.get(model, 0) + tokens
+    return {
+        "requests": requests,
+        "prompt_tokens": prompt_total,
+        "completion_tokens": completion_total,
+        "total_tokens": prompt_total + completion_total,
+        "by_day": [{"date": d, "tokens": t} for d, t in sorted(by_day.items())],
+        "by_model": [{"model": k, "tokens": v} for k, v in sorted(by_model.items(), key=lambda x: -x[1])],
+    }
 
 
 def delete_conversation(db: Session, conversation_id: int, operator) -> None:
@@ -518,7 +907,20 @@ def update_conversation(
         raise HTTPException(status_code=422, detail="无可更新字段")
     conv = _get_own_conversation(db, conversation_id, operator.id)
     if title is not None:
-        conv.title = title.strip() or conv.title
+        new_title = title.strip() or conv.title
+        dup = (
+            db.query(AIConversation)
+            .filter(
+                AIConversation.user_id == operator.id,
+                AIConversation.status == 1,
+                AIConversation.id != conv.id,
+                AIConversation.title == new_title,
+            )
+            .first()
+        )
+        if dup:
+            raise HTTPException(status_code=422, detail="已存在同名会话，请换个名称")
+        conv.title = new_title
     if pinned is not None:
         conv.pinned = 1 if pinned else 0
     db.commit()

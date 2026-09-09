@@ -28,6 +28,7 @@ describe('MessageItem 对话体验增强', () => {
   it('流式中思考面板默认展开（思考内容可见），结束后自动收起且标题含思考时长', () => {
     const reasoning = '先检索考勤制度…'
     const streamingMsg: ChatMsg = {
+      id: 'local-1',
       role: 'assistant',
       content: '正在回答',
       reasoning,
@@ -49,7 +50,7 @@ describe('MessageItem 对话体验增强', () => {
   it('历史消息（非流式）思考面板默认收起，可手动展开', () => {
     const reasoning = '历史思考内容'
     const { queryByText } = render(
-      wrap(<MessageItem msg={{ role: 'assistant', content: '答案', reasoning }} />),
+      wrap(<MessageItem msg={{ id: 'local-2', role: 'assistant', content: '答案', reasoning }} />),
     )
     expect(queryByText(reasoning)).toBeNull()
     expect(queryByText('思考过程')).toBeTruthy()
@@ -61,6 +62,7 @@ describe('MessageItem 对话体验增强', () => {
       wrap(
         <MessageItem
           msg={{
+            id: 'local-3',
             role: 'assistant',
             content: '',
             error: true,
@@ -78,7 +80,7 @@ describe('MessageItem 对话体验增强', () => {
 
   it('用户停止（非错误）不渲染错误文案', () => {
     const { queryByText } = render(
-      wrap(<MessageItem msg={{ role: 'assistant', content: '', stopped: true }} />),
+      wrap(<MessageItem msg={{ id: 'local-4', role: 'assistant', content: '', stopped: true }} />),
     )
     expect(queryByText(/生成失败/)).toBeNull()
     expect(queryByText('已停止生成')).toBeTruthy()

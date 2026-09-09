@@ -19,12 +19,13 @@ def list_adjustments(
     user_id: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
-    _: SysUser = Depends(require_permissions("salary:list")),
+    current_user: SysUser = Depends(require_permissions("salary:list")),
     db: Session = Depends(get_db),
 ):
     """手动奖惩分页列表。"""
     items, total = salary_service.list_adjustments(
-        db, year_month=year_month, user_id=user_id, page=page, page_size=page_size
+        db, year_month=year_month, user_id=user_id, page=page, page_size=page_size,
+        current_user=current_user,
     )
     return ok(page_result(items, total, page, page_size))
 
@@ -57,13 +58,14 @@ def list_payrolls(
     status: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
-    _: SysUser = Depends(require_permissions("salary:list")),
+    current_user: SysUser = Depends(require_permissions("salary:list")),
     db: Session = Depends(get_db),
 ):
     """工资单分页列表。"""
     items, total = salary_service.list_payrolls(
         db, year_month=year_month, department_id=department_id, user_id=user_id,
         status=status, page=page, page_size=page_size,
+        current_user=current_user,
     )
     return ok(page_result(items, total, page, page_size))
 

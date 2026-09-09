@@ -49,14 +49,30 @@ def test_comment_rejected():
 
 
 def test_other_table_rejected():
-    with pytest.raises(HTTPException):
-        validate_and_normalize_sql("SELECT username FROM sys_user LIMIT 10")
+    """sys_user现在是允许的表，应该通过验证"""
+    sql = validate_and_normalize_sql("SELECT username FROM sys_user LIMIT 10")
+    assert "sys_user" in sql.lower()
 
 
 def test_join_other_table_rejected():
+    """sys_user现在是允许的表，JOIN应该通过验证"""
+    sql = validate_and_normalize_sql(
+        "SELECT p.name FROM product p JOIN sys_user u ON p.id = u.id LIMIT 10"
+    )
+    assert "sys_user" in sql.lower()
+
+
+def test_disallowed_table_rejected():
+    """不允许的表应该被拒绝"""
+    with pytest.raises(HTTPException):
+        validate_and_normalize_sql("SELECT * FROM sys_role LIMIT 10")
+
+
+def test_join_disallowed_table_rejected():
+    """JOIN不允许的表应该被拒绝"""
     with pytest.raises(HTTPException):
         validate_and_normalize_sql(
-            "SELECT p.name FROM product p JOIN sys_user u ON p.id = u.id LIMIT 10"
+            "SELECT p.name FROM product p JOIN sys_role r ON p.id = r.id LIMIT 10"
         )
 
 

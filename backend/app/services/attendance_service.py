@@ -94,8 +94,15 @@ def list_records(
     status: str | None = None,
     page: int = 1,
     page_size: int = 20,
+    current_user: SysUser | None = None,
 ) -> tuple[list[dict], int]:
     q = select(AttRecord)
+
+    # 应用数据范围权限
+    if current_user:
+        from app.core.deps import apply_data_scope
+        q = apply_data_scope(q, AttRecord, current_user, db, user_field="user_id")
+
     if department_id:
         q = q.where(AttRecord.dept_id == department_id)
     if user_id:

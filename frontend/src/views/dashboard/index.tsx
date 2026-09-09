@@ -124,7 +124,8 @@ export default function Dashboard() {
     : []
 
   return (
-    <div>
+    /* overflowX:hidden 裁掉 antd Row 的负 margin（gutter=16 时左右各 -8px），避免出现横向滚动条 */
+    <div style={{ overflowX: 'hidden' }}>
       {/* 欢迎行 */}
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -179,6 +180,151 @@ export default function Dashboard() {
         <Col span={24}>
           <Card title="近 6 个月考勤异常趋势" styles={{ body: { paddingTop: 12 } }}>
             <EChart option={trendOption} />
+          </Card>
+        </Col>
+
+        {/* 新增：薪资趋势和人力结构 */}
+        <Col xs={24} lg={12}>
+          <Card title="近6个月薪资成本趋势" styles={{ body: { paddingTop: 12 } }}>
+            <EChart
+              option={{
+                color: PALETTE,
+                tooltip: {
+                  trigger: 'axis',
+                  formatter: (params: any) => {
+                    const [bar, line] = params
+                    return `${bar.name}<br/>${bar.marker} 薪资总额: ¥${bar.value.toLocaleString()}<br/>${line?.marker || ''} 发放人数: ${line?.value ?? 0}人`
+                  },
+                },
+                legend: { data: ['薪资总额', '发放人数'], bottom: 0 },
+                grid: { left: 60, right: 60, top: 30, bottom: 40 },
+                xAxis: {
+                  type: 'category',
+                  data: summary?.salary_trend.map((t) => t.month) ?? [],
+                },
+                yAxis: [
+                  { type: 'value', name: '金额(元)', position: 'left' },
+                  { type: 'value', name: '人数', position: 'right', minInterval: 1, splitLine: { show: false } },
+                ],
+                series: [
+                  {
+                    name: '薪资总额',
+                    type: 'bar',
+                    barMaxWidth: 36,
+                    itemStyle: { color: PALETTE[0], borderRadius: [4, 4, 0, 0] },
+                    data: summary?.salary_trend.map((t) => t.total) ?? [],
+                  },
+                  {
+                    name: '发放人数',
+                    type: 'line',
+                    yAxisIndex: 1,
+                    smooth: true,
+                    symbolSize: 7,
+                    itemStyle: { color: PALETTE[1] },
+                    data: summary?.salary_trend.map((t) => t.count) ?? [],
+                  },
+                ],
+              }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={12}>
+          <Card title={`各部门薪资分布（${summary?.payroll_month ?? '暂无'}）`} styles={{ body: { paddingTop: 12 } }}>
+            <EChart
+              option={{
+                color: PALETTE,
+                tooltip: {
+                  trigger: 'item',
+                  formatter: (params: any) => `${params.name}<br/>薪资总额: ¥${params.value.toLocaleString()}<br/>占比: ${params.percent}%`,
+                },
+                legend: { orient: 'vertical', right: 10, top: 'center', type: 'scroll' },
+                series: [
+                  {
+                    type: 'pie',
+                    radius: ['42%', '68%'],
+                    center: ['40%', '50%'],
+                    itemStyle: { borderRadius: 6, borderWidth: 2, borderColor: '#fff' },
+                    label: { show: false },
+                    emphasis: {
+                      label: { show: true, fontSize: 14, fontWeight: 'bold' },
+                    },
+                    data: summary?.salary_by_dept ?? [],
+                  },
+                ],
+              }}
+            />
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={12}>
+          <Card title="人力结构分析" styles={{ body: { paddingTop: 12 } }}>
+            <Row gutter={16}>
+              <Col span={12}>
+                <div style={{ textAlign: 'center', marginBottom: 8, fontWeight: 500 }}>性别分布</div>
+                <EChart
+                  height={250}
+                  option={{
+                    color: ['#1677ff', '#eb2f96', '#8c8c8c'],
+                    tooltip: { trigger: 'item', formatter: '{b}: {c}人 ({d}%)' },
+                    series: [
+                      {
+                        type: 'pie',
+                        radius: ['40%', '70%'],
+                        itemStyle: { borderRadius: 6, borderWidth: 2, borderColor: '#fff' },
+                        label: { formatter: '{b}\n{d}%' },
+                        data: summary?.headcount_structure.gender_distribution ?? [],
+                      },
+                    ],
+                  }}
+                />
+              </Col>
+              <Col span={12}>
+                <div style={{ textAlign: 'center', marginBottom: 8, fontWeight: 500 }}>年龄分布</div>
+                <EChart
+                  height={250}
+                  option={{
+                    color: PALETTE,
+                    tooltip: { trigger: 'item', formatter: '{b}: {c}人 ({d}%)' },
+                    series: [
+                      {
+                        type: 'pie',
+                        radius: ['40%', '70%'],
+                        itemStyle: { borderRadius: 6, borderWidth: 2, borderColor: '#fff' },
+                        label: { formatter: '{b}\n{d}%' },
+                        data: summary?.headcount_structure.age_distribution ?? [],
+                      },
+                    ],
+                  }}
+                />
+              </Col>
+            </Row>
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={12}>
+          <Card title="职位人数TOP8" styles={{ body: { paddingTop: 12 } }}>
+            <EChart
+              option={{
+                color: PALETTE,
+                tooltip: { trigger: 'axis' },
+                grid: { left: 80, right: 24, top: 30, bottom: 40 },
+                xAxis: { type: 'value', minInterval: 1 },
+                yAxis: {
+                  type: 'category',
+                  data: [...(summary?.position_distribution ?? [])].reverse().map((p) => p.name),
+                  axisLabel: { width: 60, overflow: 'truncate' },
+                },
+                series: [
+                  {
+                    type: 'bar',
+                    barMaxWidth: 24,
+                    itemStyle: { color: PALETTE[4], borderRadius: [0, 4, 4, 0] },
+                    data: [...(summary?.position_distribution ?? [])].reverse().map((p) => p.value),
+                  },
+                ],
+              }}
+            />
           </Card>
         </Col>
       </Row>

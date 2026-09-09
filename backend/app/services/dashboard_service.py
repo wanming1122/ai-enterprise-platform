@@ -121,6 +121,15 @@ def get_summary(db: Session) -> dict:
     trend_map = {month: int(count) for month, count in trend_rows}
     attendance_trend = [{"month": m, "value": trend_map.get(m, 0)} for m in months]
 
+    # ---------- 薪资成本趋势（近6个月） ----------
+    salary_trend = _get_salary_trend(db, today, months)
+
+    # ---------- 各部门薪资分布（最新月份） ----------
+    salary_by_dept = _get_salary_by_department(db, payroll_month)
+
+    # ---------- 人力结构分析 ----------
+    headcount_structure = _get_headcount_structure(db, today)
+
     return {
         "user_count": int(user_count),
         "dept_count": int(dept_count),
@@ -133,4 +142,124 @@ def get_summary(db: Session) -> dict:
         "position_distribution": position_distribution,
         "attendance_month_status": attendance_month_status,
         "attendance_trend": attendance_trend,
+        "salary_trend": salary_trend,
+        "salary_by_dept": salary_by_dept,
+        "headcount_structure": headcount_structure,
+    }
+
+
+def _get_salary_trend(db: Session, today: date, months: list[str]) -> list[dict]:
+    """获取近N个月薪资成本趋势：每月薪资总额和发放人数。"""
+    if not months:
+        return []
+
+    trend_start = date(int(months[0][:4]), int(months[0][5:7]), 1)
+    last_month = months[-1]
+
+    # 查询每月薪资总额和人数
+    rows = db.execute(
+        select(
+            SalPayroll.year_month,
+            func.sum(SalPayroll.total_salary).label("total"),
+            func.count(SalPayroll.id).label("count"),
+        )
+        .where(
+            SalPayroll.year_month >= months[0],
+            SalPayroll.year_month <= last_month,
+            SalPayroll.status >= 1,  # 已确认或已发放
+        )
+        .group_by(SalPayroll.year_month)
+    ).all()
+
+    trend_map = {month: (float(total), int(count)) for month, total, count in rows}
+    return [
+        {
+            "month": m,
+            "total": trend_map.get(m, (0.0, 0))[0],
+            "count": trend_map.get(m, (0.0, 0))[1],
+        }
+        for m in months
+    ]
+
+
+def _get_salary_by_department(db: Session, year_month: str | None) -> list[dict]:
+    """获取各部门薪资分布（最新月份）。"""
+    if not year_month:
+        return []
+
+    rows = db.execute(
+        select(
+            SysDepartment.name.label("dept_name"),
+            func.sum(SalPayroll.total_salary).label("total"),
+            func.count(SalPayroll.id).label("count"),
+        )
+        .join(SysUser, SysUser.id == SalPayroll.user_id)
+        .outerjoin(SysDepartment, SysDepartment.id == SysUser.department_id)
+        .where(
+            SalPayroll.year_month == year_month,
+            SalPayroll.status >= 1,
+        )
+        .group_by(SysDepartment.name)
+        .order_by(func.sum(SalPayroll.total_salary).desc())
+    ).all()
+
+    return [
+        {"name": name or "未分配部门", "value": round(float(total), 2), "count": int(count)}
+        for name, total, count in rows
+    ]
+
+
+def _get_headcount_structure(db: Session, today: date) -> dict:
+    """获取人力结构分析：性别分布和年龄段分布。"""
+    # 性别分布
+    gender_rows = db.execute(
+        select(SysUser.gender, func.count(SysUser.id))
+        .where(SysUser.status == 1)
+        .group_by(SysUser.gender)
+    ).all()
+
+    GENDER_LABELS = {0: "未知", 1: "男", 2: "女"}
+    gender_distribution = [
+        {"name": GENDER_LABELS.get(g, "未知"), "value": int(count)}
+        for g, count in gender_rows
+    ]
+
+    # 年龄段分布
+    age_ranges = [
+        ("20岁以下", 0, 20),
+        ("20-30岁", 20, 30),
+        ("30-40岁", 30, 40),
+        ("40-50岁", 40, 50),
+        ("50岁以上", 50, 100),
+    ]
+
+    age_distribution = []
+    for label, min_age, max_age in age_ranges:
+        # 计算日期范围：min_date = today - max_age years, max_date = today - min_age years
+        min_date = date(today.year - max_age, today.month, today.day)
+        max_date = date(today.year - min_age, today.month, today.day)
+
+        count = db.scalar(
+            select(func.count(SysUser.id)).where(
+                SysUser.status == 1,
+                SysUser.birthday.isnot(None),
+                SysUser.birthday >= min_date,
+                SysUser.birthday < max_date,
+            )
+        ) or 0
+        age_distribution.append({"name": label, "value": int(count)})
+
+    # 未填写生日的人数
+    no_birthday = db.scalar(
+        select(func.count(SysUser.id)).where(
+            SysUser.status == 1,
+            SysUser.birthday.is_(None),
+        )
+    ) or 0
+    if no_birthday:
+        age_distribution.append({"name": "未知", "value": int(no_birthday)})
+
+    return {
+        "gender_distribution": gender_distribution,
+        "age_distribution": age_distribution,
     }

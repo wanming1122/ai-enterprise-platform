@@ -53,13 +53,14 @@ def list_records(
     status: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
-    _: SysUser = Depends(require_permissions("attendance:list")),
+    current_user: SysUser = Depends(require_permissions("attendance:list")),
     db: Session = Depends(get_db),
 ):
     """考勤记录分页列表（按部门/员工/月份/状态筛选）。"""
     items, total = attendance_service.list_records(
         db, department_id=department_id, user_id=user_id, month=month,
         status=status, page=page, page_size=page_size,
+        current_user=current_user,
     )
     return ok(page_result(items, total, page, page_size))
 

@@ -5,7 +5,7 @@
  *   MarkdownText、引用来源（点击打开详情 Drawer，可跳知识库文件页）、流式光标
  * - 错误态：气泡红框 + 内嵌错误信息 + 重试按钮（区分「用户停止」与「服务端错误」）
  */
-import { useEffect, useState, type CSSProperties } from 'react'
+import { memo, useEffect, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button,
@@ -20,13 +20,16 @@ import {
   Typography,
 } from 'antd'
 import {
+  BulbOutlined,
   CheckOutlined,
   CloudServerOutlined,
   CopyOutlined,
   DatabaseOutlined,
   EditOutlined,
+  ExclamationCircleOutlined,
   ReloadOutlined,
   SearchOutlined,
+  WifiOutlined,
 } from '@ant-design/icons'
 import type { AIToolEvent } from '@/api/aiChat'
 import type { Citation } from '@/api/kb'
@@ -64,7 +67,7 @@ function renderToolChips(tools?: AIToolEvent[]) {
         if (t.tool === 'nl2sql') {
           return (
             <Tag key={i} icon={<DatabaseOutlined />} color="success" style={{ marginInlineEnd: 0 }}>
-              已查询产品数据{t.question ? `：${t.question}` : ''}
+              已查询业务数据{t.question ? `：${t.question}` : ''}
             </Tag>
           )
         }
@@ -76,22 +79,31 @@ function renderToolChips(tools?: AIToolEvent[]) {
 
 interface Props {
   msg: ChatMsg
+  /** 消息在列表中的索引：编辑提交时定位被修改的提问 */
+  messageIndex?: number
   /** 展示「重新生成」入口（对话末尾且非流式中） */
   showRegenerate?: boolean
-  /** 展示「编辑」入口（最后一条用户提问且非流式中） */
+  /** 展示「编辑」入口（用户提问且非流式中） */
   showEdit?: boolean
   /** 错误消息的「重试」按钮（错误且为最后一条助手消息） */
   showRetry?: boolean
+  /** SSE 已建立连接（meta 事件已到），区分「连接中/思考中」 */
+  connected?: boolean
+  /** 流式超 15s 无增量（提示可等待或停止） */
+  slow?: boolean
   onRegenerate?: () => void
   onRetry?: () => void
-  onEditMessage?: (text: string) => void
+  onEditMessage?: (index: number, text: string) => void
 }
 
-export default function MessageItem({
+function MessageItemInner({
   msg,
+  messageIndex = -1,
   showRegenerate,
   showEdit,
   showRetry,
+  connected,
+  slow,
   onRegenerate,
   onRetry,
   onEditMessage,
@@ -126,7 +138,7 @@ export default function MessageItem({
   }
 
   const submitEdit = () => {
-    if (onEditMessage) onEditMessage(draft)
+    if (onEditMessage) onEditMessage(messageIndex, draft)
     setEditing(false)
   }
 
@@ -233,6 +245,15 @@ export default function MessageItem({
         }}
       >
         {renderToolChips(msg.tools)}
+        {!!msg.memoryCount && (
+          <div style={{ marginBottom: 6 }}>
+            <Tooltip title="本轮从你的长期记忆中召回了相关内容注入回答上下文">
+              <Tag icon={<BulbOutlined />} color="purple">
+                参考了 {msg.memoryCount} 条长期记忆
+              </Tag>
+            </Tooltip>
+          </div>
+        )}
         {msg.reasoning && (
           <Collapse
             ghost
@@ -269,16 +290,44 @@ export default function MessageItem({
             {msg.streaming && <span className="chat-caret" aria-hidden />}
           </div>
         ) : msg.streaming ? (
-          <ThinkingIndicator />
+          <ThinkingIndicator text={connected ? undefined : '连接模型中…'} />
         ) : null}
-        {msg.error && msg.errorText && (
-          <Typography.Text type="danger" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
-            生成失败：{msg.errorText}
+        {msg.streaming && slow && (
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+            模型响应较慢，可继续等待或按 Enter 停止
           </Typography.Text>
+        )}
+        {msg.error && msg.errorText && (
+          <div style={{ marginTop: 6 }}>
+            <Space size={4} align="start">
+              {msg.errorType === 'network' ? (
+                <WifiOutlined style={{ color: 'var(--ant-color-error)', marginTop: 2 }} />
+              ) : (
+                <ExclamationCircleOutlined style={{ color: 'var(--ant-color-error)', marginTop: 2 }} />
+              )}
+              <div>
+                <Typography.Text type="danger" style={{ fontSize: 12, display: 'block' }}>
+                  {msg.errorText}
+                </Typography.Text>
+                {msg.errorAction && (
+                  <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block' }}>
+                    {msg.errorAction}
+                  </Typography.Text>
+                )}
+              </div>
+            </Space>
+          </div>
         )}
         {msg.stopped && !msg.error && (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             已停止生成
+          </Typography.Text>
+        )}
+        {msg.stats && !msg.streaming && (
+          <Typography.Text type="secondary" style={{ fontSize: 11, display: 'block', marginTop: 4 }}>
+            耗时 {(msg.stats.duration_ms / 1000).toFixed(1)}s · 输入 {msg.stats.prompt_tokens.toLocaleString()} /
+            输出 {msg.stats.completion_tokens.toLocaleString()} tokens
+            {msg.stats.estimated ? '（估算）' : ''}
           </Typography.Text>
         )}
         {msg.error && showRetry && (
@@ -397,3 +446,7 @@ export default function MessageItem({
     </div>
   )
 }
+
+/** memo 化：流式增量只更新最后一条消息，其余消息（props 引用未变）跳过重渲 */
+const MessageItem = memo(MessageItemInner)
+export default MessageItem

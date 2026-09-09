@@ -170,8 +170,15 @@ def list_payrolls(
     status: int | None = None,
     page: int = 1,
     page_size: int = 20,
+    current_user: SysUser | None = None,
 ) -> tuple[list[dict], int]:
     q = select(SalPayroll)
+
+    # 应用数据范围权限
+    if current_user:
+        from app.core.deps import apply_data_scope
+        q = apply_data_scope(q, SalPayroll, current_user, db, user_field="user_id")
+
     if year_month:
         _month_range(year_month)  # 格式校验
         q = q.where(SalPayroll.year_month == year_month)
@@ -280,8 +287,15 @@ def list_adjustments(
     user_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
+    current_user: SysUser | None = None,
 ) -> tuple[list[dict], int]:
     q = select(SalAdjustment)
+
+    # 应用数据范围权限
+    if current_user:
+        from app.core.deps import apply_data_scope
+        q = apply_data_scope(q, SalAdjustment, current_user, db, user_field="user_id")
+
     if year_month:
         _month_range(year_month)
         q = q.where(SalAdjustment.year_month == year_month)
@@ -295,7 +309,12 @@ def list_adjustments(
 
 
 def create_adjustment(db: Session, data: SalAdjustmentCreate, operator: SysUser) -> dict:
-    """奖惩录入：金额必须为正，方向由 adjust_type 决定。"""
+    """奖惩录入：金额必须为正，方向由 adjust_type 决定。
+
+    未填月份默认归属当前月（否则该记录永不进入任何工资单）；目标月份的工资单
+    若已确认/已发放则拒绝录入——非草稿工资单重算会被跳过，追加记录会导致
+    工资总额与明细永久不一致（金额静默丢失）。
+    """
     user = db.get(SysUser, data.user_id)
     if user is None or user.status == 2:
         raise HTTPException(status_code=422, detail="员工不存在")
@@ -305,8 +324,20 @@ def create_adjustment(db: Session, data: SalAdjustmentCreate, operator: SysUser)
         raise HTTPException(status_code=422, detail="金额必须大于0")
     if not data.reason or not data.reason.strip():
         raise HTTPException(status_code=422, detail="事由不能为空")
-    if data.year_month:
-        _month_range(data.year_month)
+    if not data.year_month:
+        data.year_month = datetime.now().strftime("%Y-%m")
+    _month_range(data.year_month)
+    payroll = db.scalar(
+        select(SalPayroll).where(
+            SalPayroll.user_id == data.user_id, SalPayroll.year_month == data.year_month
+        )
+    )
+    if payroll is not None and payroll.status != 0:
+        label = PAYROLL_STATUS.get(payroll.status, "已锁定")
+        raise HTTPException(
+            status_code=422,
+            detail=f"{data.year_month} 工资单已「{label}」，不可追加奖惩；如需调整请先生成草稿重算",
+        )
     adjustment = SalAdjustment(
         user_id=data.user_id, adjust_type=data.adjust_type,
         amount=Decimal(str(data.amount)), reason=data.reason.strip(),
