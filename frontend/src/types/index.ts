@@ -33,6 +33,8 @@ export interface UserInfo {
   phone?: string
   email?: string
   status?: number
+  /** 1=需强制修改密码（管理员重置后）；改密成功后清零 */
+  need_reset_pwd?: number
   last_login_at?: string | null
   /** 个人偏好设置（后端返回时已合并默认值） */
   preferences?: UserPreferences
@@ -46,6 +48,10 @@ export interface UserPreferences {
   notify_enabled?: boolean
   /** 界面主题：light 浅色 / dark 深色 */
   theme?: 'light' | 'dark'
+  /** AI 助手默认生成模型配置ID */
+  default_model?: number | null
+  /** AI 助手长期记忆开关 */
+  ai_memory_enabled?: boolean
 }
 
 /** 菜单节点（后端菜单树驱动动态路由与侧边导航） */

@@ -1,7 +1,7 @@
-"""AI 智能中心模型：ai_model 模型配置、ai_conversation 会话、ai_message 消息。"""
+"""AI 智能中心模型：ai_model 模型配置、ai_conversation 会话、ai_message 消息、ai_memory 长期记忆。"""
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Numeric, SmallInteger, String, Text
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,7 @@ class AIModel(Base):
     api_key: Mapped[str] = mapped_column(String(255), nullable=False, comment="Fernet 加密后的密钥")
     model_name: Mapped[str] = mapped_column(String(64), nullable=False, comment="模型标识，如 mimo-v2.5")
     temperature: Mapped[float | None] = mapped_column(Numeric(3, 2), comment="生成温度（仅 llm）")
+    context_window: Mapped[int | None] = mapped_column(Integer, comment="上下文窗口（token，仅 llm；空则用全局常量）")
     remark: Mapped[str | None] = mapped_column(String(255), comment="备注")
     is_default: Mapped[bool] = mapped_column(SmallInteger, default=0, nullable=False, comment="同类型仅一个默认")
     status: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False, comment="1启用 0停用 2软删除")
@@ -58,4 +59,22 @@ class AIMessage(Base):
     tool_name: Mapped[str | None] = mapped_column(String(32), comment="工具名（AI助手用）")
     citations: Mapped[list | None] = mapped_column(JSON, comment="引用来源列表")
     attachments: Mapped[list | None] = mapped_column(JSON, comment="附件列表（多模态图片 Data URL）")
+    usage: Mapped[dict | None] = mapped_column(JSON, comment="本轮用量统计（prompt/completion tokens、耗时、模型）")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class AIMemory(Base):
+    """AI 助手长期记忆表：按 user_id 隔离，提问时向量召回相关记忆注入 system prompt。"""
+
+    __tablename__ = "ai_memory"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sys_user.id"), nullable=False, comment="归属用户")
+    content: Mapped[str] = mapped_column(String(300), nullable=False, comment="记忆内容（≤300字）")
+    memory_type: Mapped[str] = mapped_column(String(16), default="fact", nullable=False, comment="fact事实/preference偏好")
+    source_conversation_id: Mapped[int | None] = mapped_column(BigInteger, comment="来源会话（提取自该轮问答）")
+    status: Mapped[int] = mapped_column(TINYINT, default=1, nullable=False, comment="1正常 2软删除")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
+    )

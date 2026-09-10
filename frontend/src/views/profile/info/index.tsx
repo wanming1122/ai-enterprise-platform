@@ -20,6 +20,7 @@ import { useRef, useState } from 'react'
 import { profileApi, type ProfileUpdate } from '@/api/profile'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
+import { phoneRule } from '@/utils/phone'
 
 /** 头像文件压缩为 Data URL（最长边 256px，JPEG 0.8 质量），满足 Data URL 直存方案 */
 function compressToDataUrl(file: File, maxSide = 256): Promise<string> {
@@ -267,7 +268,10 @@ export default function ProfileInfo() {
           <Form.Item
             name="phone"
             label="手机"
-            rules={[{ pattern: /^1\d{10}$/, message: '手机号格式不正确' }]}
+            rules={[
+              { required: true, whitespace: true, message: '请输入手机号' },
+              phoneRule(),
+            ]}
           >
             <Input placeholder="手机号" />
           </Form.Item>

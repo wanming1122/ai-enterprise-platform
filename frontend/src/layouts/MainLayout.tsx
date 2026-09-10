@@ -24,8 +24,11 @@ import type { MenuItem } from '@/types'
 
 const { Sider, Header, Content } = Layout
 
-/** 主导航 Sider 展开宽度：内容区用此常量做固定左边距，折叠/展开不改变右侧内容宽度 */
+/** 主导航 Sider 展开/折叠宽度（与下方 Sider 的 width / collapsedWidth 保持一致）。
+ *  Sider 为 position:fixed 脱离文档流，右侧内容区靠 marginLeft 让位；
+ *  折叠时必须同步收窄左边距，否则左侧会空出一条 (SIDER_WIDTH - SIDER_COLLAPSED_WIDTH) 的空白带。 */
 const SIDER_WIDTH = 200
+const SIDER_COLLAPSED_WIDTH = 80
 
 /** 菜单图标映射：后端存储的图标名 → antd 图标组件 */
 const iconMap: Record<string, ReactNode> = {
@@ -181,7 +184,14 @@ export default function MainLayout() {
           onClick={handleMenuClick}
         />
       </Sider>
-      <Layout style={{ marginLeft: SIDER_WIDTH, height: '100%' }}>
+      <Layout
+        style={{
+          // 左边距随折叠状态在 200/80 之间切换，与侧栏贴合；过渡与 Sider 宽度动画同步
+          marginLeft: collapsed ? SIDER_COLLAPSED_WIDTH : SIDER_WIDTH,
+          height: '100%',
+          transition: 'margin-left 0.2s',
+        }}
+      >
         <Header
           style={{
             background: token.colorBgContainer,
@@ -208,16 +218,23 @@ export default function MainLayout() {
             </Space>
           </Dropdown>
         </Header>
-        <Content style={{ margin: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
+        {/* 内容区纵向 flex、自身不滚动：面包屑固定顶部，页面在下方独立滚动。
+            聊天页（根部 height:100%）因此恰好填满剩余高度，不再向 Content 溢出，
+            消除最右侧那条多余的外层滚动条（原 overflow:auto 由面包屑+100%高度撑出） */}
+        <Content style={{ margin: 16, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {mustChangePwd ? (
-            <ForceChangePassword />
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              <ForceChangePassword />
+            </div>
           ) : (
             <>
               <BreadcrumbNav />
               {/* 局部 Suspense：页面懒加载挂起时仅内容区空白兜底，侧栏/顶栏保持稳定，不再整屏闪现加载圈 */}
-              <Suspense fallback={null}>
-                <Outlet />
-              </Suspense>
+              <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                <Suspense fallback={null}>
+                  <Outlet />
+                </Suspense>
+              </div>
             </>
           )}
         </Content>

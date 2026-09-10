@@ -71,12 +71,12 @@ export const userApi = {
   users: () => get<{ id: number; username: string; real_name: string | null }[]>('/users/options'),
 }
 
-/** 触发浏览器下载 Blob 文件 */
+/** 触发浏览器下载 Blob 文件（延迟 revoke，避免个别浏览器下载尚未开始即被回收） */
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
   a.click()
-  URL.revokeObjectURL(url)
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

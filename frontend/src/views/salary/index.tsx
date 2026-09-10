@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Radio,
   Select,
   Space,
@@ -229,12 +230,24 @@ export default function SalaryManage() {
           <Button type="link" size="small" onClick={() => openDetail(record)}>明细</Button>
           {record.status === 0 && (
             <HasPermission code="salary:confirm">
-              <Button type="link" size="small" onClick={() => handleConfirm(record)}>确认</Button>
+              <Popconfirm
+                title={`确认 ${record.year_month} 工资单？`}
+                description="确认后将锁定，不可再重算。"
+                onConfirm={() => handleConfirm(record)}
+              >
+                <Button type="link" size="small">确认</Button>
+              </Popconfirm>
             </HasPermission>
           )}
           {record.status === 1 && (
             <HasPermission code="salary:pay">
-              <Button type="link" size="small" onClick={() => handlePay(record)}>发放</Button>
+              <Popconfirm
+                title={`发放 ${record.year_month} 工资单？`}
+                description="发放后即视为工资已到账。"
+                onConfirm={() => handlePay(record)}
+              >
+                <Button type="link" size="small" danger>发放</Button>
+              </Popconfirm>
             </HasPermission>
           )}
         </Space>

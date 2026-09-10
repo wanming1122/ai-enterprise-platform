@@ -44,6 +44,8 @@ def _expire_if_needed(db: Session, inv: SysInvitation) -> None:
 def serialize_invitation(db: Session, inv: SysInvitation) -> dict:
     dept_name = db.scalar(select(SysDepartment.name).where(SysDepartment.id == inv.department_id)) if inv.department_id else None
     role_name = db.scalar(select(SysRole.name).where(SysRole.id == inv.role_id)) if inv.role_id else None
+    # 仅未消费的邀请对外暴露 token/链接；已注册/撤销/过期/失败的链接已不可用，避免列表查看者直接拿去注册
+    link_visible = inv.status in (0, 1, 2)
     return {
         "id": inv.id,
         "name": inv.name,
@@ -54,14 +56,28 @@ def serialize_invitation(db: Session, inv: SysInvitation) -> dict:
         "role_id": inv.role_id,
         "role_name": role_name,
         "post": inv.post,
-        "token": inv.token,
-        "invite_link": inv.invite_link,
+        "token": inv.token if link_visible else None,
+        "invite_link": inv.invite_link if link_visible else None,
         "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
         "status": inv.status,
         "status_label": INVITATION_STATUS.get(inv.status, "未知"),
         "remark": inv.remark,
         "created_at": inv.created_at.isoformat(),
     }
+
+
+def _validate_invitation_refs(db: Session, *, role_id: int | None, department_id: int | None) -> None:
+    """校验邀请预设的部门/角色：存在、启用，且角色不得为超级管理员类型。"""
+    if department_id is not None:
+        dept = db.get(SysDepartment, department_id)
+        if dept is None or dept.status == 2:
+            raise HTTPException(status_code=422, detail="部门不存在或已删除")
+    if role_id is not None:
+        role = db.get(SysRole, role_id)
+        if role is None or role.status != 1:
+            raise HTTPException(status_code=422, detail="角色不存在或未启用")
+        if role.role_type == 1:
+            raise HTTPException(status_code=422, detail="邀请不可绑定超级管理员角色")
 
 
 def _get_invitation(db: Session, invitation_id: int) -> SysInvitation:
@@ -72,6 +88,7 @@ def _get_invitation(db: Session, invitation_id: int) -> SysInvitation:
 
 
 def create_invitation(db: Session, data: InvitationCreateIn, operator: SysUser) -> dict:
+    _validate_invitation_refs(db, role_id=data.role_id, department_id=data.department_id)
     token = secrets.token_urlsafe(24)
     expires_at = datetime.now() + timedelta(days=data.expires_days)
     inv = SysInvitation(
@@ -188,8 +205,11 @@ def public_info(db: Session, token: str, ip: str) -> dict:
 
 
 def accept_invitation(db: Session, token: str, data: InvitationAcceptIn, ip: str) -> dict:
-    """通过邀请链接注册：创建账号并自动绑定预设部门与角色。"""
-    inv = db.scalar(select(SysInvitation).where(SysInvitation.token == token))
+    """通过邀请链接注册：创建账号并自动绑定预设部门与角色。
+
+    行级锁（FOR UPDATE）占用邀请状态，防止同一链接并发注册出多个账号。
+    """
+    inv = db.scalar(select(SysInvitation).where(SysInvitation.token == token).with_for_update())
     if inv is None:
         raise HTTPException(status_code=404, detail="邀请不存在或链接无效")
     _expire_if_needed(db, inv)
@@ -204,6 +224,11 @@ def accept_invitation(db: Session, token: str, data: InvitationAcceptIn, ip: str
     if db.scalar(select(func.count()).select_from(SysUser).where(SysUser.username == data.username)):
         raise HTTPException(status_code=422, detail="该用户名已被使用")
     validate_password(data.password)
+    # 注册时二次校验预设角色（角色可能在创建后被停用/删除/改为超管类型）
+    if inv.role_id:
+        role = db.get(SysRole, inv.role_id)
+        if role is None or role.status != 1 or role.role_type == 1:
+            raise HTTPException(status_code=422, detail="邀请预设角色不可用，请联系管理员重新发送邀请")
 
     user = SysUser(
         username=data.username,

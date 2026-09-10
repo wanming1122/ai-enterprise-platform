@@ -122,7 +122,7 @@ def run_action(action: str, params: dict | None = None) -> str:
         if action == "file_read":
             target = _sandbox_resolve(params.get("path"))
             if not target.is_file():
-                return f"{target} 不是文件"
+                return f"{target.name} 不是文件"
             if target.stat().st_size > MAX_FILE_BYTES:
                 return f"文件过大（{_human(target.stat().st_size)}），仅支持读取 100KB 内的文本文件"
             raw = target.read_bytes()
@@ -132,7 +132,7 @@ def run_action(action: str, params: dict | None = None) -> str:
                 text = raw.decode("gbk", errors="ignore")
             if "\x00" in text[:200]:
                 return "该文件疑似二进制文件，不支持读取"
-            return f"{target}（前 {MAX_READ_CHARS} 字符）：\n{text[:MAX_READ_CHARS]}"
+            return f"{target.name}（前 {MAX_READ_CHARS} 字符）：\n{text[:MAX_READ_CHARS]}"
 
         return f"不支持的操作 {action}"
     except ValueError as exc:

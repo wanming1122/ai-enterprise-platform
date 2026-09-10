@@ -54,7 +54,9 @@ def _get_approval(db: Session, approval_id: int) -> SysRegistrationApproval:
 def register_apply(db: Session, data: RegisterApplyIn, ip: str) -> dict:
     """公开注册申请：创建停用账号并生成待审批记录。"""
     exists = db.scalar(
-        select(func.count()).select_from(SysUser).where(SysUser.username == data.username)
+        select(func.count()).select_from(SysUser).where(
+            SysUser.username == data.username, SysUser.status != 2
+        )
     ) or 0
     if exists:
         raise HTTPException(status_code=422, detail="该用户名已被使用")
@@ -131,7 +133,12 @@ def _finish_review(db: Session, approval_id: int, operator: SysUser, approve: bo
             db.add(SysUserRoleRelation(user_id=user.id, role_id=a.apply_role_id))
         a.status = 1
     else:
-        a.status = 2  # 账号保持停用
+        a.status = 2
+        # 驳回：释放申请占用的用户名（审批表 user_id 外键引用账号，不能物理删除，
+        # 故软删并改名），否则被驳回者永久无法重新申请、管理员也无接口释放
+        if user.status == 0:
+            user.status = 2
+            user.username = f"{user.username[:40]}#rejected{user.id}"
     a.review_comment = comment
     a.reviewer_id = operator.id
     a.reviewed_at = datetime.now()

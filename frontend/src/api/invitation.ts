@@ -3,7 +3,7 @@ import { get, post, del } from './request'
 
 export interface InvitationItem {
   id: number
-  name: string
+  name: string | null
   phone: string | null
   email: string | null
   department_id: number | null
@@ -42,11 +42,11 @@ export const invitationApi = {
   list: (params: { status?: number; keyword?: string; page?: number; page_size?: number }) =>
     get<PageResult<InvitationItem>>('/invitations', { params }),
   create: (data: {
-    name: string
+    name?: string
     phone?: string
     email?: string
-    department_id?: number
-    role_id?: number
+    department_id: number
+    role_id: number
     post?: string
     expires_days?: number
     remark?: string
@@ -58,7 +58,7 @@ export const invitationApi = {
   /** 公开：邀请信息与接受注册（无需登录） */
   publicInfo: (token: string) =>
     get<{
-      name: string
+      name: string | null
       department_name: string | null
       role_name: string | null
       post: string | null

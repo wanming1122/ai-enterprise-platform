@@ -124,13 +124,14 @@ def file_detail(
 @router.get("/files/{file_id}/chunks")
 def file_chunks(
     file_id: int,
+    keyword: str | None = Query(default=None, description="按切片正文模糊过滤"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
     _: SysUser = Depends(require_permissions("file:list")),
     db: Session = Depends(get_db),
 ):
-    """切片分页预览：内容、标题路径、页码。"""
-    items, total = kb_service.list_chunks(db, file_id, page=page, page_size=page_size)
+    """切片分页预览：内容、标题路径、页码；可按关键词过滤。"""
+    items, total = kb_service.list_chunks(db, file_id, keyword=keyword, page=page, page_size=page_size)
     return ok(page_result(items, total, page, page_size))
 
 

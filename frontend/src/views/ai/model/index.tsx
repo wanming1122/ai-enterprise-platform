@@ -37,6 +37,7 @@ interface ModelFormValues {
   api_key?: string
   model_name: string
   temperature?: number | null
+  context_window?: number | null
   remark?: string
   is_default: boolean
   status: number
@@ -93,6 +94,7 @@ export default function ModelConfig() {
         api_key: undefined,
         model_name: record.model_name,
         temperature: record.temperature ?? undefined,
+        context_window: record.context_window ?? undefined,
         remark: record.remark ?? undefined,
         is_default: record.is_default,
         status: record.status === 0 ? 0 : 1,
@@ -100,8 +102,8 @@ export default function ModelConfig() {
     } else {
       form.setFieldsValue({
         name: undefined, model_type: 'llm', provider: 'zhipu', base_url: undefined,
-        api_key: undefined, model_name: undefined, temperature: 0.1, remark: undefined,
-        is_default: false, status: 1,
+        api_key: undefined, model_name: undefined, temperature: 0.1,
+        context_window: undefined, remark: undefined, is_default: false, status: 1,
       })
     }
     setModalOpen(true)
@@ -321,6 +323,21 @@ export default function ModelConfig() {
           {watchedType === 'llm' && (
             <Form.Item name="temperature" label="温度">
               <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} placeholder="生成温度，默认 0.1" />
+            </Form.Item>
+          )}
+          {watchedType === 'llm' && (
+            <Form.Item
+              name="context_window"
+              label="上下文窗口"
+              rules={[{ type: 'number' as const, min: 1024, max: 2000000, message: '范围 1024 ~ 2000000 tokens' }]}
+            >
+              <InputNumber
+                min={1024}
+                max={2000000}
+                step={1024}
+                style={{ width: '100%' }}
+                placeholder="模型上下文窗口（token），如 131072；留空用系统默认"
+              />
             </Form.Item>
           )}
           <Form.Item name="is_default" label="默认模型" valuePropName="checked">

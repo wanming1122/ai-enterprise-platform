@@ -70,12 +70,19 @@ def _send_code_email(to_email: str, code: str) -> None:
 
 
 def _check_ip_limit(ip: str) -> None:
-    """IP 维度发送限流（与登录失败锁定同一进程内计数模式）。"""
+    """IP 维度发送限流（与登录失败锁定同一进程内计数模式）。
+
+    锁定到期后清零计数：否则一次超限后每次请求都会续锁，
+    该 IP 将退化为「每 15 分钟只能发 1 码」的准永久限流。
+    """
     now = datetime.now()
     rec = _ip_send.get(ip)
-    if rec and rec.get("lock_until") and rec["lock_until"] > now:
-        remain = max(1, int((rec["lock_until"] - now).total_seconds() // 60))
-        _reject(f"操作过于频繁，请 {remain} 分钟后重试")
+    if rec and rec.get("lock_until"):
+        if rec["lock_until"] > now:
+            remain = max(1, int((rec["lock_until"] - now).total_seconds() // 60))
+            _reject(f"操作过于频繁，请 {remain} 分钟后重试")
+        rec["count"] = 0
+        rec["lock_until"] = None
     rec = _ip_send.setdefault(ip, {"count": 0, "lock_until": None})
     rec["count"] += 1
     if rec["count"] >= MAX_SEND_PER_IP:
@@ -89,6 +96,9 @@ def send_code(db: Session, username: str, ip: str) -> dict:
 
     user = db.scalar(select(SysUser).where(SysUser.username == username, SysUser.status != 2))
     if user is None:
+        # 已配置 SMTP（真实发信）时不暴露账号是否存在，防枚举；演示回显模式维持明确报错
+        if settings.SMTP_HOST:
+            _reject("若该账号存在，验证码已发送至其绑定邮箱，请注意查收")
         _reject("账号不存在")
 
     sent = db.scalar(

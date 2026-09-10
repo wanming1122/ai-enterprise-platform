@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom'
 import { useUserStore } from '@/stores/user'
 import { approvalApi, type RegisterRoleOption } from '@/api/approval'
 import { recoveryApi } from '@/api/recovery'
+import { phoneRule } from '@/utils/phone'
 
 interface RegisterFormValues {
   username: string
@@ -187,14 +188,21 @@ export default function Login() {
           <Form.Item name="username" label="登录账号" rules={[{ required: true, message: '请输入登录账号' }, { pattern: /^[a-zA-Z0-9_]{3,64}$/, message: '3-64位字母/数字/下划线' }]}>
             <Input placeholder="登录账号" maxLength={64} />
           </Form.Item>
-          <Form.Item name="password" label="设置密码" rules={[{ required: true, message: '请输入密码' }, { min: 6, message: '至少6位' }]}>
-            <Input.Password placeholder="至少6位" autoComplete="new-password" />
+          <Form.Item name="password" label="设置密码" rules={[{ required: true, message: '请输入密码' }, { pattern: /^(?=.*[A-Za-z])(?=.*\d).{8,}$/, message: '至少8位且包含字母和数字' }]}>
+            <Input.Password placeholder="至少8位且包含字母和数字" autoComplete="new-password" />
           </Form.Item>
           <Form.Item name="real_name" label="姓名" rules={[{ required: true, message: '请输入姓名' }]}>
             <Input placeholder="真实姓名" maxLength={64} />
           </Form.Item>
-          <Form.Item name="phone" label="手机号">
-            <Input placeholder="选填" maxLength={20} />
+          <Form.Item
+            name="phone"
+            label="手机号"
+            rules={[
+              { required: true, whitespace: true, message: '请输入手机号' },
+              phoneRule(),
+            ]}
+          >
+            <Input placeholder="请输入手机号" maxLength={20} />
           </Form.Item>
           <Form.Item name="email" label="邮箱">
             <Input placeholder="选填" maxLength={128} />

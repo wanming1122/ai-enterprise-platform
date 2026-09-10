@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.role import SysRole
@@ -16,10 +17,13 @@ router = APIRouter(prefix="/api/v1/auth", tags=["认证"])
 
 
 def _client_ip(request: Request) -> str:
-    """解析客户端 IP，兼容开发代理的 X-Forwarded-For。"""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """解析客户端 IP：默认以 TCP 直连地址为准（X-Forwarded-For 可被任意伪造，
+    会被用来绕过 IP 限流或构造他人 IP 触发锁定）；仅当 .env 配置 TRUST_XFF=true
+    （部署于会覆盖该头的可信反向代理之后）时才读取。"""
+    if settings.TRUST_XFF:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else ""
 
 

@@ -3,15 +3,16 @@ import { CopyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
 import { INVITATION_STATUS_COLOR, invitationApi, type InvitationItem, type InvitationLogItem } from '@/api/invitation'
+import { phoneRule } from '@/utils/phone'
 
 const fmtTime = (v: string | null | undefined) => (v ? v.slice(0, 19).replace('T', ' ') : '-')
 
 interface InvitationFormValues {
-  name: string
+  name?: string
   phone?: string
   email?: string
-  department_id?: number
-  role_id?: number
+  department_id: number
+  role_id: number
   post?: string
   expires_days: number
   remark?: string
@@ -105,12 +106,16 @@ export default function InvitationList() {
 
   const openLogs = async (record: InvitationItem) => {
     setLogsFor(record)
-    setLogs(await invitationApi.logs(record.id))
+    try {
+      setLogs(await invitationApi.logs(record.id))
+    } catch {
+      // 已由拦截器提示，弹窗保持空列表
+    }
   }
 
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 70 },
-    { title: '被邀请人', dataIndex: 'name', width: 100 },
+    { title: '被邀请人', dataIndex: 'name', width: 100, render: (v: string | null) => v || '-' },
     { title: '预设部门', dataIndex: 'department_name', width: 110, render: (v: string | null) => v || '-' },
     { title: '预设角色', dataIndex: 'role_name', width: 110, render: (v: string | null) => v || '-' },
     { title: '预设岗位', dataIndex: 'post', width: 110, render: (v: string | null) => v || '-' },
@@ -215,20 +220,41 @@ export default function InvitationList() {
           创建后生成专属邀请链接，外部人员通过链接注册后自动绑定预设部门与角色。
         </Typography.Paragraph>
         <Form form={form} layout="horizontal" labelCol={{ span: 5 }} wrapperCol={{ span: 17 }}>
-          <Form.Item name="name" label="被邀请人" rules={[{ required: true, message: '请输入姓名' }]}>
-            <Input placeholder="姓名" maxLength={64} />
+          <Form.Item name="name" label="被邀请人">
+            <Input placeholder="选填" maxLength={64} />
           </Form.Item>
-          <Form.Item name="phone" label="手机号">
-            <Input placeholder="选填" maxLength={20} />
+          <Form.Item
+            name="phone"
+            label="手机号"
+            rules={[
+              { required: true, whitespace: true, message: '请输入手机号' },
+              phoneRule(),
+            ]}
+          >
+            <Input placeholder="请输入手机号" maxLength={20} />
           </Form.Item>
           <Form.Item name="email" label="邮箱">
             <Input placeholder="选填" maxLength={128} />
           </Form.Item>
-          <Form.Item name="department_id" label="预设部门">
-            <Select placeholder="入职后归属部门" allowClear options={depts} />
+          <Form.Item
+            name="department_id"
+            label="预设部门"
+            rules={[{ required: true, message: '请选择预设部门' }]}
+          >
+            <Select
+              placeholder="入职后归属部门"
+              options={depts.map((d) => ({ value: d.id, label: d.name }))}
+            />
           </Form.Item>
-          <Form.Item name="role_id" label="预设角色">
-            <Select placeholder="入职后绑定角色" allowClear options={roles} />
+          <Form.Item
+            name="role_id"
+            label="预设角色"
+            rules={[{ required: true, message: '请选择预设角色' }]}
+          >
+            <Select
+              placeholder="入职后绑定角色"
+              options={roles.map((r) => ({ value: r.id, label: r.name }))}
+            />
           </Form.Item>
           <Form.Item name="post" label="预设岗位">
             <Input placeholder="选填" maxLength={64} />
@@ -244,7 +270,7 @@ export default function InvitationList() {
 
       {/* 邀请日志抽屉 */}
       <Modal
-        title={`邀请日志${logsFor ? `（${logsFor.name}）` : ''}`}
+        title={`邀请日志${logsFor ? `（${logsFor.name || '未填写'}）` : ''}`}
         open={!!logsFor}
         onCancel={() => setLogsFor(null)}
         footer={null}

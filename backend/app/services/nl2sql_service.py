@@ -37,12 +37,12 @@ _TABLE_DDL = (
     "status TINYINT 状态(1正常 0停用 2已删除), created_at DATETIME 创建时间); "
     "att_record(id BIGINT 主键, user_id BIGINT 员工ID外键关联sys_user表, dept_id BIGINT 部门快照, "
     "att_date DATE 考勤日期, check_in TIME 签到时间, check_out TIME 签退时间, "
-    "status VARCHAR(16) 状态(normal正常/late迟到/early_leave早退/miss_check漏打卡/absent旷工/leave请假/business_trip出差), "
+    "status VARCHAR(16) 考勤业务状态(normal正常/late迟到/early_leave早退/miss_check漏打卡/absent旷工/leave请假/business_trip出差，非软删除), "
     "location VARCHAR(128) 考勤地点, remark VARCHAR(255) 备注, created_at DATETIME 创建时间); "
     "sal_payroll(id BIGINT 主键, user_id BIGINT 员工ID外键关联sys_user表, year_month VARCHAR(7) 月份YYYY-MM格式, "
     "position_name VARCHAR(64) 职位名称, base_salary DECIMAL(10,2) 基本工资, "
     "attendance_adjust DECIMAL(10,2) 考勤增减, manual_adjust DECIMAL(10,2) 手动奖惩, "
-    "total_salary DECIMAL(10,2) 应发合计, status TINYINT 状态(0草稿 1已确认 2已发放), "
+    "total_salary DECIMAL(10,2) 应发合计, status TINYINT 业务状态(0草稿 1已确认 2已发放，非软删除标记；不筛选时统计全部状态), "
     "created_at DATETIME 创建时间)"
 )
 
@@ -55,15 +55,22 @@ _SYSTEM_PROMPT = (
     "1. 只输出一条SELECT语句，必须以SELECT开头；禁止INSERT/UPDATE/DELETE/DDL等任何非查询语句。\n"
     "2. 只允许查询上述四张表（product/sys_user/att_record/sal_payroll），禁止访问其他表，禁止访问系统库。\n"
     "3. 可以使用JOIN关联上述四张表进行跨表查询，如：查询某部门的考勤记录可JOIN sys_user和att_record。\n"
-    "4. 结果必须排除已删除数据：product表用status!=2，sys_user表用status!=2，其他表无软删除字段无需过滤。\n"
+    "4. 仅 product、sys_user 有软删除字段（用 status!=2 排除已删除行）；"
+    "sal_payroll 与 att_record 的 status 是业务状态、不是软删除——"
+    "除非用户明确要求按状态筛选（如「已发放的工资单」「迟到的考勤」），否则禁止添加任何 status 条件；"
+    "薪资/考勤统计默认包含全部状态。\n"
     "5. 语句必须以LIMIT结尾，且LIMIT返回行数不超过100。\n"
-    "6. 不使用库名前缀限定列名，不使用注释，末尾不加分号。可以使用表别名。\n"
+    "6. 不使用库名前缀限定列名（如 db.table.column），不使用注释，末尾不加分号。可使用任意字母开头的表别名（如 su、sp、emp）。\n"
     "7. 只输出SQL文本本身：不要任何解释、不要markdown代码块围栏、不要多余字符。\n"
     "常见查询场景：\n"
     "- 产品库存/价格/分类 → 查询product表\n"
     "- 员工信息/部门/职位 → 查询sys_user表，可JOIN department和position\n"
     "- 考勤记录/迟到早退 → 查询att_record表，可JOIN sys_user获取员工信息\n"
-    "- 工资单/薪资统计 → 查询sal_payroll表，可JOIN sys_user获取员工信息"
+    "- 工资单/薪资统计 → 查询sal_payroll表，可JOIN sys_user获取员工信息\n"
+    "示例：\n"
+    "- 「薪资最高的人是谁？」→ SELECT su.real_name FROM sal_payroll sp JOIN sys_user su ON sp.user_id=su.id ORDER BY sp.total_salary DESC LIMIT 1（不要加 status 过滤）\n"
+    "- 「薪资最低的人是谁？」→ SELECT su.real_name FROM sal_payroll sp JOIN sys_user su ON sp.user_id=su.id ORDER BY sp.total_salary ASC LIMIT 1（不要加 status 过滤）\n"
+    "- 「已发放的工资单有哪些？」→ 仅当用户显式要求状态时才过滤：SELECT sp.year_month, sp.total_salary FROM sal_payroll sp WHERE sp.status=2 LIMIT 100"
 )
 
 
@@ -97,6 +104,19 @@ _TABLE_REF_RE = re.compile(r"\b(from|join)\s+`?([a-zA-Z_]\w*)`?", re.I)
 _LIMIT_TAIL_RE = re.compile(r"\blimit\s+(\d+)\s*(?:,\s*(\d+))?(?:\s+offset\s+(\d+))?\s*$", re.I)
 _LIMIT_ANY_RE = re.compile(r"\blimit\s+\d+", re.I)
 
+# SQL 子句关键字：提取别名时排除，避免把 WHERE/ON 等误当别名
+_SQL_KEYWORDS = {
+    "where", "on", "join", "inner", "left", "right", "full", "outer", "cross",
+    "group", "order", "by", "limit", "union", "having", "as", "and", "or",
+    "not", "is", "null", "select", "from", "desc", "asc", "offset", "using",
+}
+# 表引用与别名：FROM/JOIN 后的表名，可带可选 AS 与别名（兼容反引号）
+_TABLE_ALIAS_RE = re.compile(
+    r"\b(?:from|join)\s+`?([a-zA-Z_]\w*)`?(?:\s+(?:as\s+)?([a-zA-Z_]\w*))?", re.I
+)
+# 子查询别名：`) 别名`（子句关键字由 _SQL_KEYWORDS 过滤）
+_SUBQUERY_ALIAS_RE = re.compile(r"\)\s+(?:as\s+)?([a-zA-Z_]\w*)", re.I)
+
 
 def _strip_literals(sql: str) -> str:
     """把 '...'/"..." 字符串字面量替换为空串，供关键词/对象扫描（不改原 SQL）。"""
@@ -129,6 +149,29 @@ def _reject(detail: str) -> None:
     raise HTTPException(status_code=422, detail=detail)
 
 
+def _collect_aliases(sql: str) -> set[str]:
+    """收集 SQL 中显式声明的表别名（小写）。
+
+    用于区分「别名.列名」与「库名.表名」：点号前缀只允许是四张白名单表，
+    或本 SQL 中显式声明的别名——后者由模型自由命名（su/sp/emp 等），
+    不能硬编码枚举，否则同义 SQL 会因别名不同而被误判为库名前缀。
+    """
+    aliases: set[str] = set()
+    for table, alias in _TABLE_ALIAS_RE.findall(sql):
+        name = (alias or "").lower()
+        # 排除：未起别名、子句关键字、白名单表名（避免把 JOIN 的第二张表当别名）
+        if not name or name in _SQL_KEYWORDS or name in _ALLOWED_TABLES:
+            continue
+        if name == table.lower():  # FROM t t 视为未起别名
+            continue
+        aliases.add(name)
+    for alias in _SUBQUERY_ALIAS_RE.findall(sql):
+        name = alias.lower()
+        if name not in _SQL_KEYWORDS and name not in _ALLOWED_TABLES:
+            aliases.add(name)
+    return aliases
+
+
 def validate_and_normalize_sql(raw: str) -> str:
     """生成入库前/执行前共用的校验与规整：返回可直接执行的 SQL，不合法 422。"""
     sql = (raw or "").strip()
@@ -151,12 +194,12 @@ def validate_and_normalize_sql(raw: str) -> str:
     if bad:
         _reject(f"SQL包含禁止的关键词或对象：{bad.group(0)}")
     if _QUALIFIED_RE.search(stripped):
-        # 允许使用表别名，但不允许使用库名前缀
-        # 检查是否有db.table格式的引用
+        # 允许「别名.列名」，仅禁止「库名.表名」：
+        # 点号前缀须为白名单表名，或本 SQL 中显式声明的别名（动态解析，不硬编码别名）
+        declared_aliases = _collect_aliases(stripped)
         for match in re.finditer(r"([a-zA-Z_]\w*)\s*\.\s*([a-zA-Z_]\w*)", stripped):
             prefix = match.group(1).lower()
-            # 如果前缀不是已知表名，则认为是库名前缀，拒绝
-            if prefix not in _ALLOWED_TABLES and prefix not in {"p", "u", "a", "s"}:  # 允许常见别名
+            if prefix not in _ALLOWED_TABLES and prefix not in declared_aliases:
                 _reject("不允许使用库名前缀限定（仅可查询product/sys_user/att_record/sal_payroll表）")
 
     tables = [name.lower() for _, name in _TABLE_REF_RE.findall(stripped)]

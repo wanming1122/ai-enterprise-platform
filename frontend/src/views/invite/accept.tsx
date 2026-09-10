@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { invitationApi } from '@/api/invitation'
 
 interface InviteInfo {
-  name: string
+  name: string | null
   department_name: string | null
   role_name: string | null
   post: string | null
@@ -90,8 +90,9 @@ export default function InviteAccept() {
           入职邀请
         </Typography.Title>
         <Typography.Paragraph type="secondary" style={{ textAlign: 'center' }}>
-          {info.name} · {info.department_name || '未指定部门'} · {info.role_name || '未指定角色'}
-          {info.post ? ` · ${info.post}` : ''}
+          {[info.name || '受邀人', info.department_name || '未指定部门', info.role_name || '未指定角色', info.post || '']
+            .filter(Boolean)
+            .join(' · ')}
         </Typography.Paragraph>
 
         {!acceptable && (
@@ -113,8 +114,8 @@ export default function InviteAccept() {
               <Form.Item name="username" rules={[{ required: true, message: '请输入登录账号' }, { pattern: /^[a-zA-Z0-9_]{3,64}$/, message: '3-64位字母/数字/下划线' }]}>
                 <Input placeholder="登录账号" maxLength={64} />
               </Form.Item>
-              <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }, { min: 6, message: '至少6位' }]}>
-                <Input.Password placeholder="设置密码（至少6位）" autoComplete="new-password" />
+              <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }, { pattern: /^(?=.*[A-Za-z])(?=.*\d).{8,}$/, message: '至少8位且包含字母和数字' }]}>
+                <Input.Password placeholder="至少8位且包含字母和数字" autoComplete="new-password" />
               </Form.Item>
               <Button type="primary" htmlType="submit" block loading={submitting}>
                 完成注册入职

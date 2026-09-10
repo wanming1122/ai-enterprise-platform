@@ -138,6 +138,13 @@ def delete_position(db: Session, position_id: int, operator: SysUser) -> None:
     if bound:
         raise HTTPException(status_code=422, detail=f"仍有 {bound} 名员工绑定该职位，请先调整后再删除")
     position.status = 2  # 软删除
+    # 释放唯一键占用（uk_position_name/uk_position_code）：软删行仍占物理唯一索引，
+    # 不改名则同名/同编码职位永远无法重建
+    suffix = f"_deleted_{position.id}"
+    if not position.name.endswith(suffix):
+        position.name = f"{position.name[:64 - len(suffix)]}{suffix}"
+    if not position.code.endswith(suffix):
+        position.code = f"{position.code[:32 - len(suffix)]}{suffix}"
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="职位管理",
               action="删除职位", params={"id": position_id}, result=1)

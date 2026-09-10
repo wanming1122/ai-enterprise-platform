@@ -81,6 +81,8 @@ export default function KBManage() {
   const [chunksTotal, setChunksTotal] = useState(0)
   const [chunksLoading, setChunksLoading] = useState(false)
   const [chunksPage, setChunksPage] = useState(1)
+  /** 切片内容搜索关键词（空 = 不过滤） */
+  const [chunksKeyword, setChunksKeyword] = useState<string | undefined>()
 
   const loadList = useCallback(async () => {
     setLoading(true)
@@ -130,13 +132,17 @@ export default function KBManage() {
     if (!chunksFile) return
     setChunksLoading(true)
     try {
-      const res = await kbApi.chunks(chunksFile.id, { page: chunksPage, page_size: 10 })
+      const res = await kbApi.chunks(chunksFile.id, {
+        keyword: chunksKeyword,
+        page: chunksPage,
+        page_size: 10,
+      })
       setChunks(res.list)
       setChunksTotal(res.total)
     } finally {
       setChunksLoading(false)
     }
-  }, [chunksFile, chunksPage])
+  }, [chunksFile, chunksPage, chunksKeyword])
 
   useEffect(() => {
     if (chunksOpen) loadChunks()
@@ -167,8 +173,12 @@ export default function KBManage() {
     setSaving(true)
     try {
       if (editing) {
-        await kbApi.update(editing.id, values)
-        message.success('保存成功')
+        const res = await kbApi.update(editing.id, values)
+        if (res.requires_rebuild) {
+          message.warning('切片参数已保存；已有文件需点击「重建」重新向量化后才会按新参数生效')
+        } else {
+          message.success('保存成功')
+        }
       } else {
         await kbApi.create(values)
         message.success('创建成功，Embedding 模型与维度已锁定')
@@ -237,6 +247,7 @@ export default function KBManage() {
   const openChunks = (record: KBFileItem) => {
     setChunksFile(record)
     setChunksPage(1)
+    setChunksKeyword(undefined)
     setChunksOpen(true)
   }
 
@@ -441,7 +452,7 @@ export default function KBManage() {
           </Space>
           <Typography.Text type="secondary">
             {editing
-              ? 'Embedding 模型与维度创建后锁定，不可修改。'
+              ? 'Embedding 模型与维度创建后锁定，不可修改；修改切片长度/重叠后需点击「重建」重新向量化，才会对已有文件生效。'
               : '创建时自动探测并锁定 Embedding 模型与维度（模型由后端配置决定）。'}
           </Typography.Text>
         </Form>
@@ -527,6 +538,15 @@ export default function KBManage() {
         width={760}
         zIndex={1010}
       >
+        <Input.Search
+          allowClear
+          placeholder="按切片内容搜索"
+          style={{ marginBottom: 12 }}
+          onSearch={(v) => {
+            setChunksKeyword(v.trim() || undefined)
+            setChunksPage(1)
+          }}
+        />
         <Table
           rowKey="id"
           size="small"

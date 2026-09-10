@@ -73,8 +73,17 @@ def get_dept(db: Session, dept_id: int) -> SysDepartment:
     return dept
 
 
+def _validate_leader(db: Session, leader_id: int | None) -> None:
+    """负责人外键校验：存在且在职（避免悬空外键 500 / 静默脏数据）。"""
+    if leader_id is not None:
+        leader = db.get(SysUser, leader_id)
+        if leader is None or leader.status != 1:
+            raise HTTPException(status_code=422, detail="部门负责人不存在或未启用")
+
+
 def create_dept(db: Session, data: DeptCreate, operator: SysUser) -> dict:
     _validate_parent(db, data.parent_id)
+    _validate_leader(db, data.leader_id)
     dept = SysDepartment(
         name=data.name,
         parent_id=data.parent_id,
@@ -97,6 +106,8 @@ def update_dept(db: Session, dept_id: int, data: DeptUpdate, operator: SysUser) 
     updates = data.model_dump(exclude_unset=True)
     if "parent_id" in updates:
         _validate_parent(db, updates["parent_id"], self_id=dept_id)
+    if "leader_id" in updates:
+        _validate_leader(db, updates["leader_id"])
     # 部分更新允许不传 name；显式传入为空才拦截
     if "name" in updates and not str(updates["name"]).strip():
         raise HTTPException(status_code=422, detail="部门名称不能为空")

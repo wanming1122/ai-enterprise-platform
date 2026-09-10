@@ -30,13 +30,33 @@ def _check_magic(head: bytes, file_type: str) -> bool:
     return True  # md/txt 为纯文本，无固定魔数
 
 
-def serialize_kb(db: Session, kb: KBKnowledgeBase) -> dict:
-    file_count = db.scalar(
-        select(func.count()).select_from(KBFile).where(KBFile.kb_id == kb.id, KBFile.status != 2)
-    ) or 0
-    chunk_count = db.scalar(
-        select(func.count()).select_from(KBChunk).where(KBChunk.kb_id == kb.id, KBChunk.status != 2)
-    ) or 0
+def _kb_counts(db: Session, kb_ids: list[int]) -> dict[int, tuple[int, int]]:
+    """批量统计多个知识库的（文件数, 切片数）：两条 GROUP BY 查询搞定整页，
+    避免列表逐行各查两次导致 N+1（原 20 行列表 = 41 次 SQL）。"""
+    if not kb_ids:
+        return {}
+    file_counts = dict(
+        db.execute(
+            select(KBFile.kb_id, func.count())
+            .where(KBFile.kb_id.in_(kb_ids), KBFile.status != 2)
+            .group_by(KBFile.kb_id)
+        ).all()
+    )
+    chunk_counts = dict(
+        db.execute(
+            select(KBChunk.kb_id, func.count())
+            .where(KBChunk.kb_id.in_(kb_ids), KBChunk.status != 2)
+            .group_by(KBChunk.kb_id)
+        ).all()
+    )
+    return {kid: (int(file_counts.get(kid, 0)), int(chunk_counts.get(kid, 0))) for kid in kb_ids}
+
+
+def serialize_kb(db: Session, kb: KBKnowledgeBase, counts: tuple[int, int] | None = None) -> dict:
+    """序列化知识库；counts 传入 (file_count, chunk_count) 可复用批量统计结果（列表场景）。"""
+    file_count, chunk_count = (
+        counts if counts is not None else _kb_counts(db, [kb.id]).get(kb.id, (0, 0))
+    )
     return {
         "id": kb.id,
         "name": kb.name,
@@ -88,7 +108,8 @@ def list_kbs(db: Session, *, keyword: str | None = None, page: int = 1, page_siz
         q = q.where(KBKnowledgeBase.name.like(like))
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
     kbs = db.scalars(q.order_by(KBKnowledgeBase.id).offset((page - 1) * page_size).limit(page_size)).all()
-    return [serialize_kb(db, k) for k in kbs], total
+    counts = _kb_counts(db, [k.id for k in kbs])
+    return [serialize_kb(db, k, counts.get(k.id, (0, 0))) for k in kbs], total
 
 
 def get_kb(db: Session, kb_id: int) -> KBKnowledgeBase:
@@ -156,19 +177,32 @@ def update_kb(db: Session, kb_id: int, data: KBUpdate, operator: SysUser) -> dic
             updates.get("chunk_size") or kb.chunk_size
         ):
             raise HTTPException(status_code=422, detail="overlap 需满足 0≤overlap<size")
+    # 切片参数变化不会自动重切已有文件：标记 requires_rebuild 供前端提示「需重建后才生效」，
+    # 避免"改了参数却毫无变化"的语义误导
+    chunk_changed = (
+        (updates.get("chunk_size") is not None and updates["chunk_size"] != kb.chunk_size)
+        or (updates.get("chunk_overlap") is not None and updates["chunk_overlap"] != kb.chunk_overlap)
+    )
     for field, value in updates.items():
         setattr(kb, field, value)
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="知识库",
               action="编辑知识库", params={"id": kb_id, **updates}, result=1)
-    return serialize_kb(db, kb)
+    result = serialize_kb(db, kb)
+    result["requires_rebuild"] = chunk_changed
+    return result
 
 
 def delete_kb(db: Session, kb_id: int, operator: SysUser) -> None:
     """软删除知识库及其下全部文件（Chroma 侧同步在 T2 接入）。"""
     kb = get_kb(db, kb_id)
     kb.status = 2
+    # 释放唯一键占用（uk_kb_name）：软删行仍占物理唯一索引，同名知识库无法重建
+    suffix = f"_deleted_{kb.id}"
+    if not kb.name.endswith(suffix):
+        kb.name = f"{kb.name[:64 - len(suffix)]}{suffix}"
     for f in db.scalars(select(KBFile).where(KBFile.kb_id == kb_id, KBFile.status != 2)).all():
+        _release_file_hash(f)
         f.status = 2
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="知识库",
@@ -235,18 +269,33 @@ def get_file(db: Session, file_id: int) -> KBFile:
     return f
 
 
+def _release_file_hash(f: KBFile) -> None:
+    """释放唯一键占用（uk_kbfile_hash = kb_id + content_hash）。
+
+    content_hash 列宽恰为 SHA256 长度（64），无法直接追加后缀，
+    改为「deleted_{id}_{原哈希前40位}」：保留可追溯性且长度不超过列宽。
+    """
+    if f.content_hash and not f.content_hash.startswith("deleted_"):
+        f.content_hash = f"deleted_{f.id}_{f.content_hash[:40]}"
+
+
 def delete_file(db: Session, file_id: int, operator: SysUser) -> None:
     """软删除文件（Chroma 侧同步标记在 T2 接入后生效）。"""
     f = get_file(db, file_id)
+    _release_file_hash(f)
     f.status = 2
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="知识库",
               action="删除文件", params={"file_id": file_id}, result=1)
 
 
-def list_chunks(db: Session, file_id: int, *, page: int = 1, page_size: int = 20):
+def list_chunks(db: Session, file_id: int, *, keyword: str | None = None,
+                page: int = 1, page_size: int = 20):
+    """切片分页预览；keyword 非空时按切片正文模糊过滤（便于大文件定位）。"""
     f = get_file(db, file_id)
     q = select(KBChunk).where(KBChunk.file_id == f.id, KBChunk.status != 2)
+    if keyword:
+        q = q.where(KBChunk.content.like(f"%{keyword}%"))
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
     chunks = db.scalars(
         q.order_by(KBChunk.chunk_index).offset((page - 1) * page_size).limit(page_size)

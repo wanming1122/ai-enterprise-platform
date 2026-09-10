@@ -19,11 +19,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
 import MarkdownText from '@/components/MarkdownText'
 import ThinkingIndicator from '@/components/ThinkingIndicator'
+import { streamAIChat, aiChatApi, type AIConversationItem, type AIToolEvent } from '@/api/aiChat'
 import {
   kbApi,
-  streamKBChat,
   type Citation,
-  type ConversationItem,
   type KBBase,
   type SearchHit,
 } from '@/api/kb'
@@ -33,8 +32,9 @@ interface ChatMsg {
   role: 'user' | 'assistant'
   content: string
   reasoning?: string
-  /** 本轮多轮改写后的检索词（meta 事件下发） */
+  /** 本轮检索/工具标签（retrieve 工具事件下发） */
   searchQuery?: string
+  tools?: AIToolEvent[]
   citations?: Citation[]
   streaming?: boolean
   stopped?: boolean
@@ -51,7 +51,7 @@ export default function KBChat() {
   const [kbIds, setKbIds] = useState<number[]>([])
 
   // ---------- 会话列表 ----------
-  const [conversations, setConversations] = useState<ConversationItem[]>([])
+  const [conversations, setConversations] = useState<AIConversationItem[]>([])
   const [convTotal, setConvTotal] = useState(0)
   const [convPage, setConvPage] = useState(1)
   const [currentConvId, setCurrentConvId] = useState<number | null>(null)
@@ -70,7 +70,8 @@ export default function KBChat() {
 
   const loadConversations = useCallback(async (page: number) => {
     try {
-      const res = await kbApi.conversations({ page, page_size: 50 })
+      // 复用 AI 助手链路：source=kb 的会话（M10 双链路合并）
+      const res = await aiChatApi.conversations({ page, page_size: 50, source: 'kb' })
       setConversations((prev) => (page === 1 ? res.list : [...prev, ...res.list]))
       setConvTotal(res.total)
       setConvPage(page)
@@ -104,13 +105,16 @@ export default function KBChat() {
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
-  const openConversation = async (conv: ConversationItem) => {
+  // 页面卸载时中止进行中的 SSE 流，避免后台继续消耗与卸载后 setState
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  const openConversation = async (conv: AIConversationItem) => {
     if (streaming) {
       message.warning('正在生成回答，请先停止')
       return
     }
     try {
-      const detail = await kbApi.conversation(conv.id)
+      const detail = await aiChatApi.conversation(conv.id)
       setCurrentConvId(conv.id)
       setMessages(
         detail.messages
@@ -160,21 +164,24 @@ export default function KBChat() {
     const controller = new AbortController()
     abortRef.current = controller
     try {
-      await streamKBChat(
-        { question: text, kb_ids: kbIds, conversation_id: currentConvId, top_k: 6 },
+      // 复用 AI 助手 Agent 链路（M10 双链路合并）：kb_ids 限定检索范围，source=kb 标记会话
+      await streamAIChat(
+        { question: text, kb_ids: kbIds, source: 'kb', conversation_id: currentConvId },
         {
           onMeta: (d) => {
-            patchAssistant({ searchQuery: d.search_query })
             if (d.conversation_id !== currentConvId) {
               setCurrentConvId(d.conversation_id)
               // 新会话：乐观插入列表头部（完成后仍会刷新一次）
               const now = new Date().toISOString()
               setConversations((prev) => [
-                { id: d.conversation_id, title: text.slice(0, 32), created_at: now, updated_at: now },
+                { id: d.conversation_id, title: text.slice(0, 32), pinned: false, created_at: now, updated_at: now },
                 ...prev,
               ])
               setConvTotal((n) => n + 1)
             }
+          },
+          onTool: (ev: AIToolEvent) => {
+            if (ev.tool === 'retrieve') patchAssistant({ searchQuery: ev.query ?? '' })
           },
           onMessage: (delta) => {
             answer += delta
@@ -342,7 +349,7 @@ export default function KBChat() {
   ]
 
   return (
-    <div style={{ display: 'flex', gap: 12, height: 'calc(100vh - 96px)' }}>
+    <div style={{ display: 'flex', gap: 12, height: '100%' }}>
       {/* 左侧：会话列表 */}
       <div
         style={{
@@ -367,7 +374,7 @@ export default function KBChat() {
           <Typography.Text strong>会话列表</Typography.Text>
           <Button size="small" icon={<PlusOutlined />} onClick={newConversation}>新建</Button>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+        <div className="chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
           {conversations.length === 0 ? (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无会话" />
           ) : (
@@ -428,7 +435,7 @@ export default function KBChat() {
           </HasPermission>
         </div>
 
-        <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+        <div ref={listRef} className="chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
           {messages.length === 0 ? (
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
               <Typography.Title level={4} style={{ marginBottom: 8 }}>知识库问答调试</Typography.Title>

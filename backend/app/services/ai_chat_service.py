@@ -11,6 +11,7 @@ M10：全链路异步化（async 节点 + astream + achat_*），客户端断连
 """
 import asyncio
 import json
+import logging
 import operator
 import re
 import time
@@ -31,6 +32,8 @@ from app.models.nl2sql import NL2SQLRecord
 from app.services import ai_memory_service, ai_model_service, kb_rag_service, llm_client, nl2sql_service, server_admin_service
 from app.services.operation_log_service import write_log
 from app.db.session import SessionLocal
+
+logger = logging.getLogger(__name__)
 
 HISTORY_ROUNDS = 4          # 多轮上下文回放最近 4 轮 user/assistant 终答
 MAX_TOOL_ROUNDS = 6         # 单次提问工具调用轮次上限
@@ -98,7 +101,7 @@ TOOLS_SPEC = [
         "type": "function",
         "function": {
             "name": "server_admin",
-            "description": "只读探查服务器状态（MCP 风格）。action 可选：system_info 系统信息 / disk 磁盘占用 / process 进程列表 / network 网络连接统计 / file_list 目录浏览 / file_read 读取项目内文本文件。仅当用户询问服务器、磁盘、进程、网络或项目文件相关问题时调用；全部为只读操作。",
+            "description": "只读探查服务器状态（系统信息/磁盘/进程/网络/项目文件），全部为只读操作。仅当用户询问服务器、磁盘、进程、网络或项目文件相关问题时调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -121,7 +124,7 @@ TOOLS_SPEC = [
                 "查询业务数据库的实时数据，支持四张表：product(产品)、sys_user(员工)、"
                 "att_record(考勤记录)、sal_payroll(工资单)。"
                 "回答产品库存价格、员工信息、考勤记录、薪资统计等结构化数据问题前必须先调用。"
-                "支持跨表JOIN查询，如查询某部门的考勤情况。"
+                "支持跨表JOIN查询。"
             ),
             "parameters": {
                 "type": "object",
@@ -133,15 +136,8 @@ TOOLS_SPEC = [
 ]
 
 AGENT_SYSTEM_PROMPT = (
-    "你是企业管理系统的AI助手，负责回答员工关于公司制度流程与业务数据的问题。可调用工具：\n"
-    "1. retrieve：检索企业知识库（制度、流程、文档等），回答此类问题前先调用；\n"
-    "2. nl2sql：查询业务数据库的实时数据，支持四张表：\n"
-    "   - product：产品信息（库存、价格、分类等）\n"
-    "   - sys_user：员工信息（姓名、部门、职位等）\n"
-    "   - att_record：考勤记录（签到、签退、迟到、早退等）\n"
-    "   - sal_payroll：工资单（基本工资、考勤增减、应发合计等）\n"
-    "   回答上述数据问题前先调用，支持跨表JOIN查询。\n"
-    "3. server_admin：只读探查服务器状态，仅当用户询问服务器相关问题时调用。\n"
+    "你是企业管理系统的AI助手，负责回答员工关于公司制度流程与业务数据的问题。"
+    "需要查资料或查数据时调用相应工具（各工具用途与触发条件见工具定义）。\n"
     "规则：每次只调用一个工具；工具结果足够时不要再调用；与制度、业务数据无关的问题直接回答，不调用工具。"
 )
 
@@ -215,18 +211,22 @@ async def _agent_node(state: AgentState) -> dict:
         return {"messages": [{"role": "assistant", "content": ""}]}
     usage_out: dict = {}
     mid = state.get("model_id")
+    deep = bool(state.get("deep_thinking"))
+    # 非深度思考时关闭上游思考（智谱等）：把预算留给工具决策，避免"只思考不产出"空回；
+    # 开启深度思考时思考与工具调用共用更大配额
+    agent_tokens = 4096 if deep else 1536
     try:
         msg = await llm_client.achat_with_tools(
-            state["messages"], TOOLS_SPEC, max_tokens=1536,
-            usage_out=usage_out, model_id=mid,
+            state["messages"], TOOLS_SPEC, max_tokens=agent_tokens,
+            usage_out=usage_out, model_id=mid, thinking=deep,
         )
     except HTTPException:
         if not state.get("images"):
             raise
         # 带图提问且模型不支持视觉输入时，退化纯文本重试一次
         msg = await llm_client.achat_with_tools(
-            _strip_images(state["messages"]), TOOLS_SPEC, max_tokens=1536,
-            usage_out=usage_out, model_id=mid,
+            _strip_images(state["messages"]), TOOLS_SPEC, max_tokens=agent_tokens,
+            usage_out=usage_out, model_id=mid, thinking=deep,
         )
     if usage_out.get("total_tokens") is not None:
         usage = {
@@ -250,13 +250,12 @@ def _route_after_agent(state: AgentState) -> Literal["tools", "generate", "direc
     last = state["messages"][-1]
     if last.get("tool_calls"):
         return "tools"
-    # 已发生工具调用（如知识库检索）：必须走 generate 把检索正文注入 system 后再作答，
-    # 否则 direct 路径下模型只见过工具摘要行就编造答案、引用与正文不对应
-    if state.get("tool_trace"):
-        return "generate"
-    # agent 已直接回答（无工具调用且有正文）→ 直接下发，不再二次调用 LLM
     if (last.get("content") or "").strip():
-        return "direct"
+        # agent 已产出终答：知识库检索的正文在 context_chunks（agent 不可见），必须走
+        # generate 注入后再作答，否则只见过工具摘要行会编造答案、引用与正文不对应；
+        # nl2sql/server_admin 的结果已在 tool 消息内，agent 的作答即最终答案，直接下发
+        # （同时避免再向以 assistant 结尾的请求要答案——GLM 会因此返回空正文）
+        return "generate" if state.get("context_chunks") else "direct"
     return "generate"
 
 
@@ -361,8 +360,16 @@ def _tool_nl2sql(db: Session, state: AgentState, question: str) -> str:
     write_log(db, user_id=state["user_id"], username=state.get("username"), module="NL2SQL",
               action="AI助手执行SQL", params={"question": question, "rows": len(rows), "ms": ms}, result=1)
     preview = json.dumps(rows[:20], ensure_ascii=False, default=str)[:TOOL_RESULT_MAX_CHARS]
-    return (f"已执行只读SQL：{sql}\n共 {len(rows)} 行，耗时 {ms} ms。"
-            f"结果JSON（最多前20行）：{preview}")
+    result = (f"已执行只读SQL：{sql}\n共 {len(rows)} 行，耗时 {ms} ms。"
+              f"结果JSON（最多前20行）：{preview}")
+    if not rows:
+        # 0 行自纠：模型可能自行添加了过严的过滤条件（例如把业务状态当软删除过滤），
+        # 显式提示其去掉多余筛选后重查一次，借助 agent⇄tools 循环自我纠正
+        result += (
+            "\n注意：本次查询返回 0 行。若用户预期应有数据，可能是过滤条件过严"
+            "（例如多余的 status 过滤），请去掉不必要的筛选条件后重新调用 nl2sql 查询一次，再据结果作答。"
+        )
+    return result
 
 
 def _strip_invalid_citations(answer: str, citation_count: int) -> str:
@@ -384,7 +391,12 @@ async def _generate_node(state: AgentState) -> dict:
         f"[{i + 1}] （文件：{c.get('file_name')}，标题路径：{c.get('title_path')}，页码：{c.get('page')}）\n{c.get('content')}"
         for i, c in enumerate(chunks)
     )
-    msgs = [{"role": "system", "content": _generate_system(context)}] + state["messages"]
+    # 请求若以 assistant 结尾，部分模型（如 GLM-4-Flash）视为该轮已结束而返回空正文：
+    # 剔除 agent 已产出的「纯文本终答」（保留 assistant.tool_calls 与 tool 结果的配对）。
+    base = list(state["messages"])
+    while len(base) > 1 and base[-1].get("role") == "assistant" and not base[-1].get("tool_calls"):
+        base.pop()
+    msgs = [{"role": "system", "content": _generate_system(context)}] + base
     deep = state.get("deep_thinking", False)
     answer: list[str] = []
     reasoning: list[str] = []
@@ -412,20 +424,62 @@ async def _generate_node(state: AgentState) -> dict:
                 writer({"kind": "message", "delta": delta})
 
     mid = state.get("model_id")
+
+    async def _consume_once(stream_msgs: list[dict], max_tokens: int) -> None:
+        """清空累积后消费一次流：供首次调用/剥图重试/空回答重试复用，避免内容与用量重复。"""
+        answer.clear()
+        reasoning.clear()
+        usage_acc.update({"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "has_real": False})
+        await _consume_stream(
+            llm_client.achat_stream(stream_msgs, max_tokens=max_tokens, model_id=mid, thinking=deep)
+        )
+
+    # 输出预算：非深度思考时上游思考已关闭，沿用原预算即可；深度思考时给足思考+正文空间。
+    # 若上游因超出该模型输出上限而拒绝（4xx），自动降级到保守预算重试，避免"调大反而失败"。
+    first_tokens = 8192 if deep else 3072
+    retry_tokens = 16384 if deep else 4096
+    safe_tokens = 3072
+
+    async def _generate_once(stream_msgs: list[dict], budget: int) -> None:
+        """按 budget 生成；上游因超出输出上限拒绝时降级到保守预算再试一次。"""
+        try:
+            await _consume_once(stream_msgs, budget)
+        except HTTPException:
+            if budget <= safe_tokens:
+                raise
+            await _consume_once(stream_msgs, safe_tokens)
+
+    effective_msgs = msgs
     try:
         try:
-            await _consume_stream(llm_client.achat_stream(msgs, max_tokens=3072, model_id=mid))
+            await _generate_once(msgs, first_tokens)
         except HTTPException:
             if not state.get("images"):
                 raise
             # 带图提问且模型不支持视觉输入（请求即被拒，尚未产出增量）时，退化纯文本重试
-            answer.clear()
-            reasoning.clear()
-            usage_acc.update({"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "has_real": False})
-            await _consume_stream(llm_client.achat_stream(_strip_images(msgs), max_tokens=3072, model_id=mid))
+            effective_msgs = _strip_images(msgs)
+            await _generate_once(effective_msgs, first_tokens)
     except HTTPException as exc:
         writer({"kind": "error", "message": str(exc.detail)})
         return {"answer": "", "reasoning": "", "citations": [], "error": str(exc.detail)}
+
+    if not "".join(answer).strip():
+        # 空回答兜底：推理型模型在长上下文（含工具结果）下可能只输出思考不输出正文，
+        # 加大配额重试一次；上游拒绝更大预算时忽略，走下方空回答提示而非整轮失败
+        try:
+            await _generate_once(effective_msgs, retry_tokens)
+        except HTTPException:
+            pass
+
+    if not "".join(answer).strip():
+        # 两次尝试均无正文：记录诊断信息（思考长度/用量），转错误事件让前端展示重试入口
+        logger.warning(
+            "AI 助手空回答：model_id=%s deep=%s 思考长度=%d 用量=%s",
+            mid, deep, len("".join(reasoning)), usage_acc,
+        )
+        empty_msg = "本次未生成有效回答，请重试；若持续出现，可在右下角切换其他模型"
+        writer({"kind": "error", "message": empty_msg})
+        return {"answer": "", "reasoning": "", "citations": [], "error": empty_msg}
     if usage_acc["has_real"]:
         usage = {
             "prompt_tokens": usage_acc["prompt_tokens"],
@@ -435,7 +489,7 @@ async def _generate_node(state: AgentState) -> dict:
         }
     else:  # 上游未下发 usage → 启发式估算
         usage = {
-            "prompt_tokens": _estimate_messages_tokens(msgs),
+            "prompt_tokens": _estimate_messages_tokens(effective_msgs),
             "completion_tokens": ai_memory_service.estimate_tokens("".join(answer)),
             "estimated": True,
         }
@@ -466,11 +520,15 @@ def _direct_node(state: AgentState) -> dict:
     last = state["messages"][-1]
     citations = _build_citations(state.get("context_chunks") or [])
     content = _strip_invalid_citations(last.get("content") or "", len(citations))
+    reasoning = last.get("reasoning_content") or ""
+    # 深度思考：直接下发时也把 agent 的思考推给前端，保持与 generate 路径一致的展示
+    if state.get("deep_thinking") and reasoning:
+        writer({"kind": "reasoning", "delta": reasoning})
     if content:
         writer({"kind": "message", "delta": content})
     if citations:
         writer({"kind": "citations", "citations": citations})
-    return {"answer": content, "reasoning": last.get("reasoning_content") or "", "citations": citations}
+    return {"answer": content, "reasoning": reasoning, "citations": citations}
 
 
 def _build_graph():
@@ -661,13 +719,25 @@ async def chat_sse(
         usage_log = final_state.get("usage_log") or []
         estimated = any(u.get("estimated") for u in usage_log)
         prompt_total = sum(int(u.get("prompt_tokens") or 0) for u in usage_log)
+        completion_total = sum(int(u.get("completion_tokens") or 0) for u in usage_log)
+        # 「上下文占用」取单次最大 prompt：agent 每轮决策都会重发完整历史，
+        # prompt_total 是全轮累加的计费口径，直接当占用会高估（多轮后误报超窗口）
+        prompt_max = max((int(u.get("prompt_tokens") or 0) for u in usage_log), default=0)
+        # 缓存命中率（上游 prompt_tokens_details.cached_tokens 支持时才有值，否则为 None）
+        cached_total = sum(int(u.get("cached_tokens") or 0) for u in usage_log)
+        cache_hit_rate = (
+            round(cached_total / prompt_total, 4) if prompt_total > 0 and cached_total > 0 else None
+        )
         usage_stats = {
             "prompt_tokens": prompt_total,
-            "completion_tokens": sum(int(u.get("completion_tokens") or 0) for u in usage_log),
+            "completion_tokens": completion_total,
             "estimated": estimated,
             "model": model_name,
+            # 以下两项非计费口径：供打开历史会话时还原「真实上下文占用」与缓存命中率
+            "context_tokens": prompt_max,
+            "cache_hit_rate": cache_hit_rate,
         }
-        usage_stats["total_tokens"] = usage_stats["prompt_tokens"] + usage_stats["completion_tokens"]
+        usage_stats["total_tokens"] = prompt_total + completion_total
 
         # 先落 tool 消息再落 assistant 终答，保证时间线为：工具调用 → 最终回答
         for m in final_state.get("messages", []):
@@ -687,8 +757,6 @@ async def chat_sse(
         db.add(assistant)
         conv.updated_at = datetime.now()
         db.commit()
-        # 缓存命中率（上游 prompt_tokens_details.cached_tokens 支持时才有值）
-        cached_total = sum(int(u.get("cached_tokens") or 0) for u in usage_log)
         # 工具结果容量（本轮 tool 消息），并入分类明细与总容量
         tool_results = [
             m for m in final_state.get("messages", []) if m.get("role") == "tool"
@@ -698,14 +766,15 @@ async def chat_sse(
             "tokens": sum(ai_memory_service.estimate_tokens(str(m.get("content") or "")) for m in tool_results),
         })
         estimated_total = sum(b["tokens"] for b in breakdown)
-        # 「上下文占用」取单次最大 prompt：agent 每轮决策都会重发完整历史，
-        # prompt_total 是全轮累加的计费口径，直接当占用会高估（多轮后误报超窗口）
-        prompt_max = max((int(u.get("prompt_tokens") or 0) for u in usage_log), default=0)
-        # 真实值校准：上游回传 usage 时，用单次最大 prompt 作已用量，
+        # 真实值校准：上游回传 usage 时，用单次最大 prompt（prompt_max，前面已算）作已用量，
         # 并按比例缩放分类明细使合计与已用量一致（估算仅作兜底）
         if not estimated and prompt_max > 0 and estimated_total > 0:
             factor = prompt_max / estimated_total
-            breakdown = [{**b, "tokens": max(1, round(b["tokens"] * factor))} for b in breakdown]
+            breakdown = [
+            # 保留真实 0 值（如本轮无工具结果）：仅非零项做缩放兜底，避免 0 被显示成 1
+            {**b, "tokens": max(1, round(b["tokens"] * factor)) if b["tokens"] > 0 else 0}
+            for b in breakdown
+        ]
             context_used = prompt_max
         else:
             context_used = estimated_total
@@ -720,8 +789,8 @@ async def chat_sse(
             "context_breakdown": breakdown,
             "memory_count": len(memories),
         }
-        if prompt_total > 0 and cached_total > 0:
-            done_payload["cache_hit_rate"] = round(cached_total / prompt_total, 4)
+        if cache_hit_rate is not None:
+            done_payload["cache_hit_rate"] = cache_hit_rate
         yield _sse("done", done_payload)
         if result_holder is not None:
             result_holder.update(ok=True, conversation_id=conv.id)
@@ -784,9 +853,11 @@ def _get_own_conversation(db: Session, conversation_id: int, user_id: int) -> AI
 
 
 def _estimate_conversation_context(messages: list[AIMessage]) -> dict:
-    """会话历史上下文估算（与 chat_sse 同口径）。
+    """会话历史上下文（与 chat_sse 同口径）。
 
-    不含长期记忆注入——注入内容需向量召回，打开会话时不做，前端浮层可见该项缺省。
+    优先使用最近一轮落库的真实占用（usage.context_tokens = 该轮单次最大 prompt_tokens，
+    由 chat_sse 写入），缺失时（旧数据 / 上游未回传 usage）退回启发式估算；同时返回最近
+    一轮的缓存命中率（上游支持时才有）。不含长期记忆注入——打开会话不做向量召回。
     """
     recent = [m for m in messages if m.role in ("user", "assistant")][-HISTORY_ROUNDS * 2 :]
     tool_results = [m for m in messages if m.role == "tool"]
@@ -802,7 +873,31 @@ def _estimate_conversation_context(messages: list[AIMessage]) -> dict:
             "tokens": sum(ai_memory_service.estimate_tokens(m.content or "") for m in tool_results),
         },
     ]
-    return {"total": sum(b["tokens"] for b in breakdown), "breakdown": breakdown}
+    estimated_total = sum(b["tokens"] for b in breakdown)
+    # 最近一轮 assistant 的真实占用与缓存命中率（倒序取第一条有值的）
+    real_used = 0
+    cache_hit_rate: float | None = None
+    for m in reversed(messages):
+        if m.role != "assistant" or not m.usage:
+            continue
+        used = int(m.usage.get("context_tokens") or 0)
+        rate = m.usage.get("cache_hit_rate")
+        if used > 0 or rate is not None:
+            real_used = used
+            cache_hit_rate = float(rate) if rate is not None else None
+            break
+    if real_used > 0 and estimated_total > 0:
+        # 用真实总量按比例缩放分项（分项占比仍为估算，但合计与真实占用一致）
+        factor = real_used / estimated_total
+        breakdown = [
+            # 保留真实 0 值（如本轮无工具结果）：仅非零项做缩放兜底，避免 0 被显示成 1
+            {**b, "tokens": max(1, round(b["tokens"] * factor)) if b["tokens"] > 0 else 0}
+            for b in breakdown
+        ]
+        total = real_used
+    else:
+        total = estimated_total
+    return {"total": total, "breakdown": breakdown, "cache_hit_rate": cache_hit_rate}
 
 
 MESSAGE_PAGE_SIZE = 100  # 会话消息分页大小（倒序取最近 N 条，前端可上滑加载更早）

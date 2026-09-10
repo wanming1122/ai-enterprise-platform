@@ -147,17 +147,46 @@ export async function patch<T>(url: string, data?: unknown, config?: AxiosReques
   return res.data.data
 }
 
-/** 文件下载（导出/模板）：返回 Blob，由调用方触发浏览器下载 */
+/** 文件下载（导出/模板）：返回 Blob，由调用方触发浏览器下载。
+ *  Blob 响应无法走统一拦截器的 {code,message,data} 解包，这里手动补齐：
+ *  401 → 无感刷新后重放一次；失败弹统一错误提示；导出可能较慢，超时放宽到 120s。 */
 export async function downloadBlob(
   url: string,
   params?: Record<string, unknown>,
 ): Promise<Blob> {
-  const token = getAccessToken()
-  const res = await raw.get<Blob>(url, {
-    params,
-    responseType: 'blob',
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-  })
+  const attempt = (token: string | null) =>
+    raw.get<Blob>(url, {
+      params,
+      responseType: 'blob',
+      timeout: 120000,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+  let res
+  try {
+    res = await attempt(getAccessToken())
+  } catch (e) {
+    if ((e as AxiosError)?.response?.status !== 401) {
+      message.error('下载失败，请稍后重试')
+      throw e
+    }
+    let newToken: string
+    try {
+      newToken = await refreshAccessToken()
+    } catch {
+      clearTokens()
+      if (!window.location.pathname.startsWith('/login')) {
+        message.error('登录已过期，请重新登录')
+        window.location.href = '/login'
+      }
+      throw new Error('登录已过期')
+    }
+    try {
+      res = await attempt(newToken)
+    } catch {
+      message.error('下载失败，请稍后重试')
+      throw new Error('下载失败')
+    }
+  }
   return res.data
 }
 

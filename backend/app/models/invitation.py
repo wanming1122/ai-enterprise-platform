@@ -12,7 +12,7 @@ class SysInvitation(Base):
     __tablename__ = "sys_invitation"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(64), nullable=False, comment="被邀请人姓名")
+    name: Mapped[str | None] = mapped_column(String(64), comment="被邀请人姓名（选填）")
     phone: Mapped[str | None] = mapped_column(String(20), comment="手机号")
     email: Mapped[str | None] = mapped_column(String(128), comment="邮箱")
     department_id: Mapped[int | None] = mapped_column(

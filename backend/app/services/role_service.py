@@ -11,13 +11,21 @@ from app.models.role_menu_relation import SysRoleMenuRelation
 from app.models.user import SysUser
 from app.models.user_role_relation import SysUserRoleRelation
 from app.schemas.role import RoleCreate, RoleUpdate
+from app.services.menu_service import is_super_admin
 from app.services.operation_log_service import write_log
 
 CODE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+VALID_ROLE_TYPES = (1, 2, 3)
+
+
+def _ensure_super_role_manageable(db: Session, operator: SysUser, role: SysRole) -> None:
+    """超级管理员角色仅超级管理员可编辑/授权（防普通管理员越权改动）。"""
+    if role.role_type == 1 and not is_super_admin(db, operator.id):
+        raise HTTPException(status_code=422, detail="超级管理员角色仅超级管理员可操作")
 
 
 def _check_unique(db: Session, field: str, value: str, exclude_id: int | None = None) -> None:
-    q = select(SysRole.id).where(getattr(SysRole, field) == value)
+    q = select(SysRole.id).where(getattr(SysRole, field) == value, SysRole.status != 2)
     if exclude_id is not None:
         q = q.where(SysRole.id != exclude_id)
     if db.scalar(q) is not None:
@@ -62,6 +70,10 @@ def get_role(db: Session, role_id: int) -> SysRole:
 def create_role(db: Session, data: RoleCreate, operator: SysUser) -> dict:
     if not CODE_PATTERN.match(data.code):
         raise HTTPException(status_code=422, detail="角色编码需以字母开头，仅含字母数字下划线")
+    if data.role_type not in VALID_ROLE_TYPES:
+        raise HTTPException(status_code=422, detail="角色类型不合法")
+    if data.role_type == 1 and not is_super_admin(db, operator.id):
+        raise HTTPException(status_code=422, detail="仅超级管理员可创建超级管理员类型角色")
     _check_unique(db, "name", data.name)
     _check_unique(db, "code", data.code)
     role = SysRole(name=data.name, code=data.code, role_type=data.role_type, description=data.description)
@@ -74,7 +86,17 @@ def create_role(db: Session, data: RoleCreate, operator: SysUser) -> dict:
 
 def update_role(db: Session, role_id: int, data: RoleUpdate, operator: SysUser) -> dict:
     role = get_role(db, role_id)
+    _ensure_super_role_manageable(db, operator, role)
     updates = data.model_dump(exclude_unset=True)
+    if "role_type" in updates:
+        if updates["role_type"] not in VALID_ROLE_TYPES:
+            raise HTTPException(status_code=422, detail="角色类型不合法")
+        if role.role_type == 1 and updates["role_type"] != 1:
+            raise HTTPException(status_code=422, detail="超级管理员角色类型不可变更")
+        if updates["role_type"] == 1 and not is_super_admin(db, operator.id):
+            raise HTTPException(status_code=422, detail="仅超级管理员可将角色设为超级管理员类型")
+    if "status" in updates and role.role_type == 1:
+        raise HTTPException(status_code=422, detail="超级管理员角色不可停用")
     if "name" in updates and updates["name"]:
         _check_unique(db, "name", updates["name"], exclude_id=role_id)
     if "code" in updates and updates["code"]:
@@ -94,6 +116,13 @@ def delete_role(db: Session, role_id: int, operator: SysUser) -> None:
     if role.role_type == 1:
         raise HTTPException(status_code=422, detail="超级管理员角色不可删除")
     role.status = 2  # 软删除
+    # 释放唯一键占用（uk_role_name/uk_role_code）：与审批驳回释放用户名同方案，
+    # 否则软删行永久占用唯一索引，同名/同编码角色无法重建
+    suffix = f"_deleted_{role.id}"
+    if not role.name.endswith(suffix):
+        role.name = f"{role.name[:64 - len(suffix)]}{suffix}"
+    if not role.code.endswith(suffix):
+        role.code = f"{role.code[:64 - len(suffix)]}{suffix}"
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="角色管理",
               action="删除角色", params={"id": role_id}, result=1)
@@ -112,6 +141,7 @@ def toggle_status(db: Session, role_id: int, operator: SysUser) -> dict:
 
 def authorize_menus(db: Session, role_id: int, menu_ids: list[int], operator: SysUser) -> None:
     role = get_role(db, role_id)
+    _ensure_super_role_manageable(db, operator, role)
     valid_ids = set(db.scalars(select(SysMenu.id).where(SysMenu.id.in_(menu_ids), SysMenu.status != 2)).all())
     invalid = set(menu_ids) - valid_ids
     if invalid:

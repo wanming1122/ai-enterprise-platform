@@ -52,7 +52,11 @@ def list_types(db: Session) -> list[dict]:
 
 
 def create_type(db: Session, data: DictTypeCreate, operator: SysUser) -> dict:
-    exists = db.scalar(select(SysDictType).where(SysDictType.dict_code == data.dict_code))
+    exists = db.scalar(
+        select(SysDictType).where(
+            SysDictType.dict_code == data.dict_code, SysDictType.status != 2
+        )
+    )
     if exists is not None:
         raise HTTPException(status_code=422, detail="字典编码已存在")
     t = SysDictType(**data.model_dump())
@@ -82,6 +86,10 @@ def delete_type(db: Session, type_id: int, operator: SysUser) -> None:
     for item in db.scalars(select(SysDictItem).where(SysDictItem.dict_code == t.dict_code)).all():
         item.status = 2
     t.status = 2
+    # 释放唯一键占用（uk_dict_code）：软删行仍占物理唯一索引，同编码无法重建
+    suffix = f"_deleted_{t.id}"
+    if not t.dict_code.endswith(suffix):
+        t.dict_code = f"{t.dict_code[:64 - len(suffix)]}{suffix}"
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="字典管理",
               action="删除字典类型", params={"id": type_id, "code": t.dict_code}, result=1)

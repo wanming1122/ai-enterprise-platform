@@ -13,9 +13,17 @@ class AIModelCreate(BaseModel):
     api_key: str
     model_name: str
     temperature: float | None = None
+    context_window: int | None = None
     remark: str | None = None
     is_default: bool = False
     status: int = 1
+
+    @field_validator("context_window")
+    @classmethod
+    def _check_context_window(cls, v: int | None) -> int | None:
+        if v is not None and not (1024 <= v <= 2_000_000):
+            raise ValueError("上下文窗口需在 1024 ~ 2000000 tokens 之间")
+        return v
 
     @field_validator("model_type")
     @classmethod
@@ -41,9 +49,17 @@ class AIModelUpdate(BaseModel):
     api_key: str | None = None
     model_name: str | None = None
     temperature: float | None = None
+    context_window: int | None = None
     remark: str | None = None
     is_default: bool | None = None
     status: int | None = None
+
+    @field_validator("context_window")
+    @classmethod
+    def _check_context_window(cls, v: int | None) -> int | None:
+        if v is not None and not (1024 <= v <= 2_000_000):
+            raise ValueError("上下文窗口需在 1024 ~ 2000000 tokens 之间")
+        return v
 
     @field_validator("model_type")
     @classmethod

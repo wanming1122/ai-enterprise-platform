@@ -14,6 +14,7 @@ from app.models.role import SysRole
 from app.models.user import SysUser
 from app.models.user_role_relation import SysUserRoleRelation
 from app.schemas.user import UserCreate, UserUpdate
+from app.services.menu_service import is_super_admin
 from app.services.operation_log_service import write_log
 from app.services.position_service import sync_position_role
 from app.utils.excel import export_workbook, read_workbook
@@ -31,13 +32,36 @@ def validate_password(password: str) -> None:
         raise HTTPException(status_code=422, detail="密码需至少8位且包含字母和数字")
 
 
-def _set_user_roles(db: Session, user_id: int, role_ids: list[int]) -> None:
-    """重建用户角色绑定（先删后插）。"""
+def _user_has_super_role(db: Session, user_id: int) -> bool:
+    """目标用户是否绑定超级管理员角色（无论角色状态，保护性判断）。"""
+    return (
+        db.scalar(
+            select(SysRole.id)
+            .join(SysUserRoleRelation, SysUserRoleRelation.role_id == SysRole.id)
+            .where(SysUserRoleRelation.user_id == user_id, SysRole.role_type == 1)
+        )
+        is not None
+    )
+
+
+def _ensure_can_manage_user(db: Session, operator: SysUser, user: SysUser) -> None:
+    """绑定超级管理员角色的账号，仅超级管理员可编辑/删除/停用/重置密码。"""
+    if _user_has_super_role(db, user.id) and not is_super_admin(db, operator.id):
+        raise HTTPException(status_code=422, detail="该账号绑定超级管理员角色，仅超级管理员可操作")
+
+
+def _set_user_roles(db: Session, user_id: int, role_ids: list[int], operator: SysUser | None = None) -> None:
+    """重建用户角色绑定（先删后插）。非超级管理员不可绑定超级管理员角色。"""
     if role_ids:
         exists = set(db.scalars(select(SysRole.id).where(SysRole.id.in_(role_ids), SysRole.status != 2)).all())
         invalid = set(role_ids) - exists
         if invalid:
             raise HTTPException(status_code=422, detail="存在无效的角色ID")
+        super_role_ids = set(
+            db.scalars(select(SysRole.id).where(SysRole.id.in_(exists), SysRole.role_type == 1)).all()
+        )
+        if super_role_ids and (operator is None or not is_super_admin(db, operator.id)):
+            raise HTTPException(status_code=422, detail="无权绑定超级管理员角色")
     db.execute(
         SysUserRoleRelation.__table__.delete().where(SysUserRoleRelation.user_id == user_id)
     )
@@ -140,11 +164,21 @@ def _validate_position(db: Session, position_id: int | None) -> None:
             raise HTTPException(status_code=422, detail="职位不存在或已停用")
 
 
+def _validate_department(db: Session, department_id: int | None) -> None:
+    if department_id is not None:
+        dept = db.get(SysDepartment, department_id)
+        if dept is None or dept.status == 2:
+            raise HTTPException(status_code=422, detail="部门不存在或已删除")
+
+
 def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
-    if db.scalar(select(SysUser).where(SysUser.username == data.username)):
+    if db.scalar(
+        select(SysUser).where(SysUser.username == data.username, SysUser.status != 2)
+    ):
         raise HTTPException(status_code=422, detail="账号已存在")
     validate_password(data.password)
     _validate_position(db, data.position_id)
+    _validate_department(db, data.department_id)
     user = SysUser(
         username=data.username,
         password_hash=pwd_context.hash(data.password),
@@ -161,7 +195,7 @@ def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
     )
     db.add(user)
     db.flush()
-    _set_user_roles(db, user.id, data.role_ids)
+    _set_user_roles(db, user.id, data.role_ids, operator)
     # 职位绑定角色时，新用户选该职位自动并入对应权限模板角色
     sync_position_role(db, user.id, None, data.position_id)
     db.commit()
@@ -172,15 +206,18 @@ def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
 
 def update_user(db: Session, user_id: int, data: UserUpdate, operator: SysUser) -> dict:
     user = get_user(db, user_id)
+    _ensure_can_manage_user(db, operator, user)
     updates = data.model_dump(exclude_unset=True)
     role_ids = updates.pop("role_ids", None)
     old_position_id = user.position_id
     if "position_id" in updates:
         _validate_position(db, updates["position_id"])
+    if "department_id" in updates:
+        _validate_department(db, updates["department_id"])
     for field, value in updates.items():
         setattr(user, field, value)
     if role_ids is not None:
-        _set_user_roles(db, user.id, role_ids)
+        _set_user_roles(db, user.id, role_ids, operator)
     # 职位变更时同步权限模板角色：移除旧职位角色、并入新职位角色
     sync_position_role(db, user.id, old_position_id, user.position_id)
     db.commit()
@@ -193,7 +230,13 @@ def delete_user(db: Session, user_id: int, operator: SysUser) -> None:
     if user_id == operator.id:
         raise HTTPException(status_code=422, detail="不能删除当前登录账号")
     user = get_user(db, user_id)
+    _ensure_can_manage_user(db, operator, user)
     user.status = 2  # 软删除
+    # 释放唯一键占用（uk_user_username）：软删行仍占物理唯一索引，
+    # 不改名则同名账号永远无法重建（与审批驳回释放用户名同方案）
+    suffix = f"#deleted{user.id}"
+    if not user.username.endswith(suffix):
+        user.username = f"{user.username[:64 - len(suffix)]}{suffix}"
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
               action="删除用户", params={"id": user_id}, result=1)
@@ -203,6 +246,7 @@ def toggle_status(db: Session, user_id: int, operator: SysUser) -> dict:
     if user_id == operator.id:
         raise HTTPException(status_code=422, detail="不能停用当前登录账号")
     user = get_user(db, user_id)
+    _ensure_can_manage_user(db, operator, user)
     user.status = 0 if user.status == 1 else 1
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
@@ -212,6 +256,7 @@ def toggle_status(db: Session, user_id: int, operator: SysUser) -> dict:
 
 def reset_password(db: Session, user_id: int, operator: SysUser) -> str:
     user = get_user(db, user_id)
+    _ensure_can_manage_user(db, operator, user)
     temp_password = secrets.token_urlsafe(8).replace("-", "_")
     user.password_hash = pwd_context.hash(temp_password)
     user.need_reset_pwd = 1  # 首次登录需修改密码
@@ -229,7 +274,7 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
     dept_map = {d.name: d.id for d in db.scalars(select(SysDepartment).where(SysDepartment.status != 2)).all()}
     role_map = {r.code: r.id for r in db.scalars(select(SysRole).where(SysRole.status != 2)).all()}
     position_map = {p.name: p.id for p in db.scalars(select(SysPosition).where(SysPosition.status == 1)).all()}
-    existing = set(db.scalars(select(SysUser.username)).all())
+    existing = set(db.scalars(select(SysUser.username).where(SysUser.status != 2)).all())
 
     success = 0
     errors: list[dict] = []
@@ -240,6 +285,10 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
             continue
         if username in existing:
             errors.append({"row": idx, "reason": f"账号 {username} 已存在"})
+            continue
+        phone = (row.get("手机") or "").strip()
+        if not phone:
+            errors.append({"row": idx, "reason": "手机号为空"})
             continue
         password = row.get("初始密码") or DEFAULT_IMPORT_PASSWORD
         try:
@@ -275,7 +324,7 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
             password_hash=pwd_context.hash(password),
             nickname=row.get("昵称") or None,
             real_name=row.get("姓名") or None,
-            phone=row.get("手机") or None,
+            phone=phone,
             email=row.get("邮箱") or None,
             department_id=department_id,
             position_id=position_id,
@@ -283,7 +332,7 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
         )
         db.add(user)
         db.flush()
-        _set_user_roles(db, user.id, role_ids)
+        _set_user_roles(db, user.id, role_ids, operator)
         sync_position_role(db, user.id, None, position_id)
         existing.add(username)
         success += 1

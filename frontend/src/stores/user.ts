@@ -73,7 +73,8 @@ export const useUserStore = create<UserState>((set) => ({
     }
     try {
       const data = await get<{ user: UserInfo; menus: MenuItem[]; permissions: string[] }>('/auth/me')
-      set({ token, userInfo: data.user, menus: data.menus, permissions: data.permissions, initialized: true })
+      // /auth/me 可能触发拦截器内 401 刷新并轮换了 token，取最新值回写，避免 store 留旧令牌
+      set({ token: getAccessToken() ?? token, userInfo: data.user, menus: data.menus, permissions: data.permissions, initialized: true })
     } catch {
       clearTokens()
       set({ token: '', userInfo: null, menus: [], permissions: [], initialized: true })

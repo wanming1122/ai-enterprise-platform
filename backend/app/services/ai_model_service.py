@@ -32,6 +32,30 @@ PROVIDER_LABELS = {
 }
 STATUS_LABELS = {1: "启用", 0: "停用", 2: "软删除"}
 
+# 常见模型上下文窗口兜底：模型配置未填 context_window 时按模型名前缀推断，
+# 避免回落到全局常量（默认 32K）导致上下文占比虚高（如 glm-4.7-flash 实为 128K）
+_KNOWN_CONTEXT_WINDOW: list[tuple[str, int]] = [
+    ("glm-4.7", 128000),
+    ("glm-4.6", 128000),
+    ("glm-4.5", 128000),
+    ("glm-4-flash", 128000),
+    ("glm-4", 128000),
+    ("glm-5", 128000),
+    ("glm-z1", 128000),
+    ("mimo", 1000000),
+]
+
+
+def infer_context_window(model_name: str | None, configured: int | None) -> int | None:
+    """上下文窗口：配置值优先；未填时按模型名推断；均不匹配返回 None（由调用方兜底）。"""
+    if configured:
+        return configured
+    name = (model_name or "").lower()
+    for prefix, window in _KNOWN_CONTEXT_WINDOW:
+        if name.startswith(prefix):
+            return window
+    return None
+
 
 def serialize_model(m: AIModel) -> dict:
     return {
@@ -45,6 +69,7 @@ def serialize_model(m: AIModel) -> dict:
         "api_key_masked": mask_api_key(m.api_key),
         "model_name": m.model_name,
         "temperature": float(m.temperature) if m.temperature is not None else None,
+        "context_window": m.context_window,
         "remark": m.remark,
         "is_default": bool(m.is_default),
         "status": m.status,
@@ -97,7 +122,8 @@ def create_model(db: Session, data: AIModelCreate, operator) -> dict:
     m = AIModel(
         name=data.name, model_type=data.model_type, provider=data.provider,
         base_url=data.base_url, api_key=encrypt_api_key(data.api_key),
-        model_name=data.model_name, temperature=data.temperature, remark=data.remark,
+        model_name=data.model_name, temperature=data.temperature,
+        context_window=data.context_window, remark=data.remark,
         is_default=0, status=data.status,
     )
     db.add(m)
@@ -119,6 +145,11 @@ def update_model(db: Session, model_id: int, data: AIModelUpdate, operator) -> d
         m.api_key = encrypt_api_key(key_plain)
     if "status" in updates and updates["status"] not in (0, 1):
         raise HTTPException(status_code=422, detail="status 仅支持 1启用/0停用")
+    # 停用模型不可标记默认：否则同类型将无有效默认配置，页面显示与实际解析不一致
+    if updates.get("is_default") == 1:
+        target_status = updates.get("status", m.status)
+        if target_status != 1:
+            raise HTTPException(status_code=422, detail="停用模型不可设为默认，请先启用")
     for field, value in updates.items():
         setattr(m, field, value)
     db.flush()
@@ -206,7 +237,9 @@ def _config_of(m: AIModel) -> dict:
         "base_url": _base_of(m),
         "api_key": decrypt_api_key(m.api_key),
         "model_name": m.model_name,
+        "provider": m.provider,
         "temperature": float(m.temperature) if m.temperature is not None else None,
+        "context_window": infer_context_window(m.model_name, m.context_window),
         "source": "db",
     }
 
@@ -249,8 +282,20 @@ def resolve_rerank_config(db: Session | None = None, model_name: str | None = No
             db.close()
 
 
-def resolve_llm_config() -> dict:
-    """生成模型配置：DB 默认优先，回退 .env（MIMO_*）。"""
+def resolve_llm_config(model_id: int | None = None) -> dict:
+    """生成模型配置：指定 model_id（须为启用的 llm 配置，无效回退默认）→ DB 默认 → .env（MIMO_*）。"""
+    if model_id is not None:
+        db = SessionLocal()
+        try:
+            m = db.scalar(
+                select(AIModel).where(
+                    AIModel.id == model_id, AIModel.model_type == "llm", AIModel.status == 1
+                )
+            )
+            if m is not None:
+                return _config_of(m)
+        finally:
+            db.close()
     cfg = get_default_config("llm")
     if cfg:
         return cfg
@@ -260,9 +305,27 @@ def resolve_llm_config() -> dict:
         "base_url": settings.MIMO_BASE_URL.rstrip("/"),
         "api_key": settings.MIMO_API_KEY,
         "model_name": settings.MIMO_MODEL,
+        "provider": "openai_compatible",
         "temperature": None,
         "source": "env",
     }
+
+
+def list_enabled_llm_models(db: Session) -> list[dict]:
+    """启用的生成模型精简列表（AI助手模型切换下拉用）：不含 api_key/base_url 等敏感字段。"""
+    rows = db.scalars(
+        select(AIModel)
+        .where(AIModel.model_type == "llm", AIModel.status == 1)
+        .order_by(AIModel.is_default.desc(), AIModel.id)
+    ).all()
+    return [
+        {
+            "id": m.id, "name": m.name, "model_name": m.model_name,
+            "is_default": bool(m.is_default),
+            "context_window": infer_context_window(m.model_name, m.context_window),
+        }
+        for m in rows
+    ]
 
 
 def resolve_embedding_config(db: Session | None = None, model_name: str | None = None) -> dict:
@@ -286,12 +349,24 @@ def resolve_embedding_config(db: Session | None = None, model_name: str | None =
     finally:
         if owned:
             db.close()
-    if not settings.ZHIPU_API_KEY:
-        raise HTTPException(status_code=422, detail="未配置向量模型：请在模型配置页新增并设为默认，或在 .env 配置 ZHIPU_API_KEY")
-    return {
-        "base_url": DEFAULT_BASE_URL["zhipu"],
-        "api_key": settings.ZHIPU_API_KEY,
-        "model_name": "embedding-3",
-        "temperature": None,
-        "source": "env",
-    }
+    if settings.ZHIPU_API_KEY:
+        return {
+            "base_url": DEFAULT_BASE_URL["zhipu"],
+            "api_key": settings.ZHIPU_API_KEY,
+            "model_name": "embedding-3",
+            "temperature": None,
+            "source": "env",
+        }
+    # 备选：OpenAI 兼容向量端点（MIMO_BASE_URL/MIMO_API_KEY/MIMO_EMBEDDING_MODEL）
+    if settings.MIMO_API_KEY and settings.MIMO_EMBEDDING_MODEL:
+        return {
+            "base_url": settings.MIMO_BASE_URL,
+            "api_key": settings.MIMO_API_KEY,
+            "model_name": settings.MIMO_EMBEDDING_MODEL,
+            "temperature": None,
+            "source": "env",
+        }
+    raise HTTPException(
+        status_code=422,
+        detail="未配置向量模型：请在模型配置页新增并设为默认，或在 .env 配置 ZHIPU_API_KEY（或 MIMO_API_KEY + MIMO_EMBEDDING_MODEL）",
+    )

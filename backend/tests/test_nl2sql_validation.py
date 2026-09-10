@@ -2,7 +2,7 @@
 import pytest
 from fastapi import HTTPException
 
-from app.services.nl2sql_service import validate_and_normalize_sql
+from app.services.nl2sql_service import _collect_aliases, validate_and_normalize_sql
 
 
 def test_plain_select_kept():
@@ -101,3 +101,41 @@ def test_limit_offset_form_allowed():
 def test_limit_offset_count_capped():
     assert validate_and_normalize_sql("SELECT name FROM product LIMIT 10, 5000") == \
         "SELECT name FROM product LIMIT 10, 100"
+
+
+# ---------- 表别名解析（P0 修复：动态别名不再误判为库名前缀） ----------
+
+@pytest.mark.parametrize("sql", [
+    # 线上故障 SQL 形态：su/sp 不在原硬编码白名单 {p,u,a,s} 内，曾被误判为库名前缀
+    "SELECT su.real_name, sp.total_salary FROM sal_payroll sp JOIN sys_user su ON sp.user_id = su.id LIMIT 10",
+    "SELECT emp.real_name FROM sys_user emp LIMIT 5",
+    "SELECT payroll.total_salary FROM sal_payroll payroll WHERE payroll.status >= 1 LIMIT 10",
+    "SELECT u.username FROM sys_user AS u WHERE u.status != 2 LIMIT 10",
+    # 子查询别名
+    "SELECT t.cnt FROM (SELECT COUNT(*) cnt FROM product) t LIMIT 1",
+])
+def test_table_alias_allowed(sql):
+    """模型自定义别名（含 AS 写法与子查询别名）不应被误判为库名前缀。"""
+    assert validate_and_normalize_sql(sql) == sql
+
+
+@pytest.mark.parametrize("bad", [
+    "SELECT * FROM otherdb.product LIMIT 10",
+    "SELECT sys_user.real_name FROM enterprise.sys_user LIMIT 10",
+])
+def test_db_prefix_still_rejected(bad):
+    """真库名前缀仍须拒绝——本次修复不得放宽安全边界。"""
+    with pytest.raises(HTTPException) as exc:
+        validate_and_normalize_sql(bad)
+    assert exc.value.status_code == 422
+
+
+def test_alias_collector():
+    """别名解析：区分显式别名、子句关键字与白名单表名。"""
+    aliases = _collect_aliases(
+        "SELECT su.id FROM sys_user su JOIN sal_payroll sp ON sp.user_id = su.id "
+        "WHERE su.status != 2"
+    )
+    assert aliases == {"su", "sp"}
+    assert _collect_aliases("SELECT name FROM product WHERE stock > 0") == set()
+    assert _collect_aliases("SELECT p.name FROM product p LIMIT 1") == {"p"}

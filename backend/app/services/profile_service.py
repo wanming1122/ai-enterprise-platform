@@ -20,7 +20,8 @@ MAX_AVATAR_LEN = 400_000
 # 偏好设置默认值：未设置时前端按此回退
 DEFAULT_PREFERENCES = {
     "default_home": "/dashboard", "sidebar_collapsed": False,
-    "notify_enabled": True, "theme": "light",
+    "notify_enabled": True, "theme": "light", "ai_memory_enabled": True,
+    "default_model": None,  # AI 助手默认生成模型ID；空则后端用启用中的默认模型
 }
 
 
@@ -55,8 +56,13 @@ def update_profile(db: Session, user: SysUser, data: ProfileUpdate) -> dict:
 
 
 def update_preferences(db: Session, user: SysUser, data: PreferencesUpdate) -> dict:
-    """合并式更新个人偏好（白名单键；default_home 必须是站内路径）。"""
-    updates = data.model_dump(exclude_unset=True, exclude_none=True)
+    """合并式更新个人偏好（白名单键；default_home 必须是站内路径）。
+
+    显式传 null 表示清除该项（恢复系统默认），而非被静默忽略。
+    """
+    raw_updates = data.model_dump(exclude_unset=True)
+    updates = {k: v for k, v in raw_updates.items() if v is not None}
+    resets = [k for k, v in raw_updates.items() if v is None]
     if "default_home" in updates:
         path = updates["default_home"]
         if not (isinstance(path, str) and path.startswith("/") and len(path) <= 128):
@@ -64,6 +70,8 @@ def update_preferences(db: Session, user: SysUser, data: PreferencesUpdate) -> d
     if "theme" in updates and updates["theme"] not in ("light", "dark"):
         raise HTTPException(status_code=422, detail="主题仅支持 light/dark")
     prefs: dict = dict(user.preferences or {})
+    for k in resets:
+        prefs.pop(k, None)
     prefs.update(updates)
     user.preferences = prefs
     db.commit()

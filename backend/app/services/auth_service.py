@@ -30,6 +30,8 @@ LOCK_MINUTES = 15
 
 # IP 维度失败计数与锁定（进程内，服务重启后清空；账号维度持久化于 sys_user）
 _ip_fail: dict[str, dict] = {}
+# 恒定哑哈希：账号不存在时也执行一次 verify，拉平响应时间（防用户名枚举时间侧信道）
+_DUMMY_BCRYPT_HASH = pwd_context.hash("timing-equalizer-dummy")
 
 
 def _serialize_user(db: Session, user: SysUser) -> dict:
@@ -61,6 +63,7 @@ def _serialize_user(db: Session, user: SysUser) -> dict:
         "phone": user.phone,
         "email": user.email,
         "status": user.status,
+        "need_reset_pwd": user.need_reset_pwd,
         "last_login_at": user.last_login_at,
         "preferences": {**DEFAULT_PREFERENCES, **(user.preferences or {})},
         "roles": [r.code for r in roles],
@@ -113,11 +116,14 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
     """账号密码登录：限流锁定检查 → 密码校验 → 状态校验 → 更新登录信息 → 写日志。"""
     now = datetime.now()
 
-    # IP 锁定检查
+    # IP 锁定检查（锁定到期后清零计数，避免一次超限后每次失败都续锁成准永久限流）
     ip_lock = _ip_fail.get(ip)
-    if ip_lock and ip_lock.get("lock_until") and ip_lock["lock_until"] > now:
-        remain = max(1, int((ip_lock["lock_until"] - now).total_seconds() // 60))
-        raise HTTPException(status_code=403, detail=f"IP 登录过于频繁，请 {remain} 分钟后重试")
+    if ip_lock and ip_lock.get("lock_until"):
+        if ip_lock["lock_until"] > now:
+            remain = max(1, int((ip_lock["lock_until"] - now).total_seconds() // 60))
+            raise HTTPException(status_code=403, detail=f"IP 登录过于频繁，请 {remain} 分钟后重试")
+        ip_lock["count"] = 0
+        ip_lock["lock_until"] = None
 
     user = db.scalar(select(SysUser).where(SysUser.username == username))
 
@@ -126,8 +132,13 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
         remain = max(1, int((user.locked_until - now).total_seconds() // 60))
         raise HTTPException(status_code=403, detail=f"账号已锁定，请 {remain} 分钟后重试")
 
-    # 密码校验（不区分账号不存在与密码错误，避免账号枚举）
-    if user is None or not pwd_context.verify(password, user.password_hash):
+    # 密码校验（不区分账号不存在与密码错误，避免账号枚举）；
+    # 账号不存在时也执行一次同代价哈希校验，拉平响应时间防用户名枚举侧信道
+    if user is None:
+        pwd_context.verify(password, _DUMMY_BCRYPT_HASH)
+        locked_msg = _record_fail(db, None, username, ip)
+        raise HTTPException(status_code=401, detail=locked_msg or "账号或密码错误")
+    if not pwd_context.verify(password, user.password_hash):
         locked_msg = _record_fail(db, user, username, ip)
         raise HTTPException(status_code=401, detail=locked_msg or "账号或密码错误")
 

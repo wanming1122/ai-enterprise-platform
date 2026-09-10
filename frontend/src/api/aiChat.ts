@@ -28,8 +28,13 @@ export interface AIConversationDetail extends AIConversationItem {
   messages: AIMessageItem[]
   message_total: number
   has_more: boolean
-  /** 上下文容量估算（后端与真实请求同口径：最近4轮+系统提示词+工具定义+工具结果，不含记忆注入） */
-  context_usage?: { total: number; breakdown: { label: string; tokens: number }[] }
+  /** 上下文容量（优先取最近一轮真实 prompt_tokens；无真实值时后端退回启发式估算。
+   *  breakdown 分项占比为估算按比例缩放；cache_hit_rate 仅上游支持缓存时才有） */
+  context_usage?: {
+    total: number
+    breakdown: { label: string; tokens: number }[]
+    cache_hit_rate?: number | null
+  }
 }
 
 /** 本人长期记忆条目 */

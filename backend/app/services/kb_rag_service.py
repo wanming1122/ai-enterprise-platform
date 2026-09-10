@@ -635,6 +635,8 @@ def process_file(file_id: int) -> None:
             for old in db.scalars(select(KBChunk).where(KBChunk.file_id == kb_file.id)).all():
                 db.delete(old)
             db.flush()
+            # 同步清空该文件全部旧向量：新切片数可能变少，残留向量会以过期内容被检索命中
+            remove_file_vectors(kb, kb_file.id)
             db.add_all([KBChunk(created_at=datetime.now(), **c) for c in chunks])
             kb_file.chunk_count = len(chunks)
 

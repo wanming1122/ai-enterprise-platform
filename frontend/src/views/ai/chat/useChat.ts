@@ -26,6 +26,7 @@ export const ErrorType = {
   TIMEOUT: 'timeout',      // 超时错误
   AUTH: 'auth',            // 认证错误
   SERVER: 'server',        // 服务端错误
+  BUSINESS: 'business',    // 业务错误：后端下发的可执行提示（模型空回、上游繁忙等）
   ABORT: 'abort',          // 用户主动停止
   UNKNOWN: 'unknown',      // 未知错误
 } as const
@@ -52,6 +53,11 @@ export const ERROR_MESSAGES: Record<ErrorType, { text: string; action?: string }
   },
   [ErrorType.ABORT]: {
     text: '已停止生成',
+  },
+  [ErrorType.BUSINESS]: {
+    // 实际文案优先取后端 error 事件下发的 message，此处仅作兜底
+    text: '请求未能完成',
+    action: '可在右下角切换其他模型后重试',
   },
   [ErrorType.UNKNOWN]: {
     text: '发生未知错误',
@@ -146,6 +152,8 @@ export function useChat() {
   const [currentModelId, setCurrentModelId] = useState<number | null>(null)
   /** 长会话分页：是否有更早消息 */
   const [hasMoreMessages, setHasMoreMessages] = useState(false)
+  /** 打开历史会话的加载态（拉取详情+消息期间展示骨架屏，避免停留在上一会话） */
+  const [loadingConversation, setLoadingConversation] = useState(false)
   /** SSE 状态提示：已收到 meta（连接建立）；超 15s 无增量置 slow */
   const [connected, setConnected] = useState(false)
   const [slow, setSlow] = useState(false)
@@ -242,7 +250,13 @@ export function useChat() {
       message.warning('请先停止当前生成')
       return
     }
-    const detail = await aiChatApi.conversation(id)
+    setLoadingConversation(true)
+    // 拉取失败（拦截器已提示）时复位加载态并保持当前会话不变
+    const detail = await aiChatApi.conversation(id).catch(() => {
+      setLoadingConversation(false)
+      return null
+    })
+    if (!detail) return
     setCurrentConvId(id)
     // 打开历史会话：优先用后端同口径估算（最近4轮+系统提示词+工具定义+工具结果，不含记忆注入）；
     // 后端未返回时退回本地消息正文估算。下一轮 done 事件会用真实统计覆盖
@@ -290,7 +304,12 @@ export function useChat() {
       if (!win) return prev
       const backend = detail.context_usage
       if (backend && backend.total > 0) {
-        return { used: backend.total, total: win, breakdown: backend.breakdown, cacheHitRate: null }
+        return {
+          used: backend.total,
+          total: win,
+          breakdown: backend.breakdown,
+          cacheHitRate: backend.cache_hit_rate ?? null,
+        }
       }
       return {
         used: historyUsed,
@@ -341,6 +360,7 @@ export function useChat() {
       }
     }
     loadOlderRef.current = loadOlderMessages
+    setLoadingConversation(false)
   }
 
   const removeConversation = async (id: number) => {
@@ -356,6 +376,17 @@ export function useChat() {
       if (!prev.length) return prev
       const last = prev[prev.length - 1]
       return [...prev.slice(0, -1), { ...last, ...patch }]
+    })
+  }
+
+  /** 会话活跃后本地移到列表首位并刷新 updated_at（列表按置顶/最近活跃排序），
+   *  替代每轮问答结束后的全量重拉，减少一次列表 + count 查询。 */
+  const touchConversation = (id: number) => {
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === id)
+      if (idx < 0) return prev
+      const item = { ...prev[idx], updated_at: new Date().toISOString() }
+      return [item, ...prev.filter((c) => c.id !== id)]
     })
   }
 
@@ -384,13 +415,35 @@ export function useChat() {
     let tools: AIToolEvent[] = []
     let reasoningStartedAt: number | null = null
 
-    /** 生成结束统一收尾：停止流式，并附带思考时长（有思考过程才记录） */
+    // 流式增量节流：SSE 每个 delta 都会触发整条消息重渲（含 Markdown 全量解析 +
+    // 代码高亮），按动画帧合并为一次 setState，长回答下显著降低重渲染次数。
+    // 后台标签页 rAF 暂停不影响最终结果：收尾时同步落定最后一次增量。
+    let flushHandle: number | null = null
+    const flush = () => {
+      flushHandle = null
+      patchAssistant({ content: answer, reasoning: reasoning || undefined })
+    }
+    const scheduleFlush = () => {
+      if (flushHandle !== null) return
+      flushHandle = window.requestAnimationFrame(flush)
+    }
+    const cancelFlush = () => {
+      if (flushHandle !== null) {
+        window.cancelAnimationFrame(flushHandle)
+        flushHandle = null
+      }
+    }
+
+    /** 生成结束统一收尾：先同步落定最后一次增量，再停止流式（含思考时长） */
     const finishAssistant = (patch: Partial<ChatMsg>) => {
+      cancelFlush()
       const seconds =
         reasoningStartedAt !== null && reasoning
           ? Number(((Date.now() - reasoningStartedAt) / 1000).toFixed(1))
           : undefined
       patchAssistant({
+        content: answer,
+        reasoning: reasoning || undefined,
         streaming: false,
         ...(seconds !== undefined ? { reasoningSeconds: seconds } : {}),
         ...patch,
@@ -432,12 +485,12 @@ export function useChat() {
             bumpSlowTimer()
             if (reasoningStartedAt === null) reasoningStartedAt = Date.now()
             reasoning += delta
-            patchAssistant({ reasoning })
+            scheduleFlush()
           },
           onMessage: (delta) => {
             bumpSlowTimer()
             answer += delta
-            patchAssistant({ content: answer })
+            scheduleFlush()
           },
           onCitations: (list) => {
             patchAssistant({ citations: list })
@@ -473,16 +526,19 @@ export function useChat() {
               })
             }
             finishAssistant({})
-            loadConversations(1)
+            touchConversation(data.conversation_id)
           },
           onError: (msg) => {
             // 服务端 error 事件 / HTTP 错误：标红并内嵌错误信息（不再叠加全局 toast）
+            // 业务错误：后端下发的可执行提示（如"本次未能生成有效回答…"）优先透传，
+            // 避免被通用"未知错误"文案覆盖；网络/超时/认证类仍走分类文案
             const errorType = classifyError({ message: msg })
-            const errorInfo = ERROR_MESSAGES[errorType]
+            const isBusiness = errorType === ErrorType.UNKNOWN && !!msg
+            const errorInfo = ERROR_MESSAGES[isBusiness ? ErrorType.BUSINESS : errorType]
             finishAssistant({
               error: true,
-              errorText: errorInfo.text,
-              errorType,
+              errorText: isBusiness ? msg : errorInfo.text,
+              errorType: isBusiness ? ErrorType.BUSINESS : errorType,
               errorAction: errorInfo.action,
             })
             if (!answer) setPendingImages(images)
@@ -516,6 +572,11 @@ export function useChat() {
       }
       if (!answer) setPendingImages(images)
     } finally {
+      // 兜底：流未走 done/finishAssistant（如无 done 直接断开）时，落定剩余增量避免内容丢失
+      if (flushHandle !== null) {
+        cancelFlush()
+        patchAssistant({ content: answer, reasoning: reasoning || undefined })
+      }
       setStreaming(false)
       setConnected(false)
       setSlow(false)
@@ -641,6 +702,7 @@ export function useChat() {
     changeModel,
     hasMoreMessages,
     loadOlderMessages,
+    loadingConversation,
     connected,
     slow,
     abortRef,

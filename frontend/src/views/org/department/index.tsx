@@ -156,9 +156,13 @@ export default function DepartmentManage() {
   }
 
   const handleRemove = async (record: DeptItem) => {
-    await deptApi.remove(record.id)
-    message.success('删除成功')
-    loadTree()
+    try {
+      await deptApi.remove(record.id)
+      message.success('删除成功')
+      loadTree()
+    } catch {
+      // 已由拦截器提示（存在下级部门/挂有员工等）
+    }
   }
 
   const handleMove = async (id: number, dir: -1 | 1) => {

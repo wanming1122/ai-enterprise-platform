@@ -20,6 +20,7 @@ import { UploadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
+import { phoneRule } from '@/utils/phone'
 import { positionApi, type PositionOption } from '@/api/position'
 import { saveBlob, userApi, type DeptOption, type ImportResult, type RoleOption, type UserForm } from '@/api/user'
 import type { UserInfo } from '@/types'
@@ -182,13 +183,21 @@ export default function UserManage() {
   }
 
   const handleExport = async () => {
-    const blob = await userApi.exportUsers(filters)
-    saveBlob(blob, '用户数据.xlsx')
+    try {
+      const blob = await userApi.exportUsers(filters)
+      saveBlob(blob, '用户数据.xlsx')
+    } catch {
+      // 失败提示已由下载封装统一处理
+    }
   }
 
   const handleTemplate = async () => {
-    const blob = await userApi.downloadTemplate()
-    saveBlob(blob, '用户导入模板.xlsx')
+    try {
+      const blob = await userApi.downloadTemplate()
+      saveBlob(blob, '用户导入模板.xlsx')
+    } catch {
+      // 失败提示已由下载封装统一处理
+    }
   }
 
   const columns = [
@@ -368,17 +377,33 @@ export default function UserManage() {
               <DatePicker style={{ width: '100%' }} placeholder="选择日期" />
             </Form.Item>
           </Space>
-          <Form.Item name="phone" label="手机">
+          <Form.Item
+            name="phone"
+            label="手机"
+            rules={[
+              { required: true, whitespace: true, message: '请输入手机号' },
+              phoneRule(),
+            ]}
+          >
             <Input placeholder="手机号" />
           </Form.Item>
           <Form.Item name="email" label="邮箱" rules={[{ type: 'email', message: '邮箱格式不正确' }]}>
             <Input placeholder="邮箱" />
           </Form.Item>
-          <Form.Item name="department_id" label="部门">
-            <TreeSelect allowClear placeholder="选择部门" treeData={toTreeData(depts) as never} />
+          <Form.Item
+            name="department_id"
+            label="部门"
+            rules={[{ required: true, message: '请选择部门' }]}
+          >
+            <TreeSelect placeholder="选择部门" treeData={toTreeData(depts) as never} />
           </Form.Item>
-          <Form.Item name="position_id" label="职位" extra="选择职位后自动获得其绑定角色的权限模板">
-            <Select allowClear placeholder="选择职位" showSearch optionFilterProp="label">
+          <Form.Item
+            name="position_id"
+            label="职位"
+            extra="选择职位后自动获得其绑定角色的权限模板"
+            rules={[{ required: true, message: '请选择职位' }]}
+          >
+            <Select placeholder="选择职位" showSearch optionFilterProp="label">
               {positions.map((p) => (
                 <Select.Option key={p.id} value={p.id} label={p.name}>
                   {p.name}

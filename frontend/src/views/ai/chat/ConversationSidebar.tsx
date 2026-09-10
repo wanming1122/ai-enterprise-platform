@@ -1,12 +1,14 @@
 /**
  * 会话侧边栏（AI 助手页，M7）：搜索（防抖+标题高亮）、时间分组（今天/昨天/近7天/更早）、
- * 置顶分组与置顶按钮、双击重命名、分页加载/切换/删除。
+ * 置顶分组与置顶按钮、重命名（hover 编辑按钮 / 双击标题进入编辑态，保存/取消按钮 +
+ * 回车保存 + Esc 取消，含非空/长度/重名校验）、分页加载/切换/删除。
  * 数据与写操作由页面容器/useChat 提供；置顶与重命名采用乐观更新。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Button, Input, Popconfirm, Typography } from 'antd'
+import { App, Button, Input, Popconfirm, Space, Typography } from 'antd'
 import {
   DeleteOutlined,
+  EditOutlined,
   PlusOutlined,
   PushpinOutlined,
 } from '@ant-design/icons'
@@ -56,6 +58,7 @@ export default function ConversationSidebar({
   const [editingId, setEditingId] = useState<number | null>(null)
   const [draft, setDraft] = useState('')
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const { message } = App.useApp()
 
   // 搜索防抖 300ms（本地内存过滤）
   useEffect(() => {
@@ -103,10 +106,29 @@ export default function ConversationSidebar({
     setEditingId(c.id)
   }
 
+  const cancelEdit = () => setEditingId(null)
+
+  /** 提交重命名：非空 / 长度 / 重名（同列表内大小写不敏感）三重校验，失败保持编辑态 */
   const commitEdit = (id: number) => {
+    const text = draft.trim()
+    if (!text) {
+      message.warning('会话名称不能为空')
+      return
+    }
+    if (text.length > 64) {
+      message.warning('会话名称不能超过 64 个字符')
+      return
+    }
+    const duplicated = conversations.some(
+      (c) => c.id !== id && (c.title ?? '').trim().toLowerCase() === text.toLowerCase(),
+    )
+    if (duplicated) {
+      message.error('已存在同名会话，请换个名称')
+      return
+    }
     setEditingId(null)
-    if (draft.trim() && draft.trim() !== conversations.find((c) => c.id === id)?.title) {
-      onRename(id, draft)
+    if (text !== (conversations.find((c) => c.id === id)?.title ?? '')) {
+      onRename(id, text)
     }
   }
 
@@ -139,19 +161,39 @@ export default function ConversationSidebar({
       >
         <div style={{ minWidth: 0, flex: 1 }}>
           {isEditing ? (
-            <Input
-              autoFocus
-              size="small"
-              value={draft}
-              maxLength={64}
-              onChange={(e) => setDraft(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              onPressEnter={() => commitEdit(c.id)}
-              onBlur={() => commitEdit(c.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setEditingId(null)
-              }}
-            />
+            <div onClick={(e) => e.stopPropagation()}>
+              <Input
+                autoFocus
+                size="small"
+                value={draft}
+                maxLength={64}
+                status={!draft.trim() ? 'error' : undefined}
+                onChange={(e) => setDraft(e.target.value)}
+                onPressEnter={() => commitEdit(c.id)}
+                onBlur={() => commitEdit(c.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') cancelEdit()
+                }}
+              />
+              <Space size={4} style={{ marginTop: 4 }}>
+                <Button
+                  size="small"
+                  type="primary"
+                  disabled={!draft.trim()}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => commitEdit(c.id)}
+                >
+                  保存
+                </Button>
+                <Button
+                  size="small"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={cancelEdit}
+                >
+                  取消
+                </Button>
+              </Space>
+            </div>
           ) : (
             <>
               <div
@@ -161,7 +203,7 @@ export default function ConversationSidebar({
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                 }}
-                title="双击重命名"
+                title="双击或点击编辑按钮重命名"
                 onDoubleClick={(e) => {
                   e.stopPropagation()
                   startEdit(c)
@@ -176,6 +218,16 @@ export default function ConversationSidebar({
           )}
         </div>
         <span className="chat-actions">
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            title="重命名"
+            onClick={(e) => {
+              e.stopPropagation()
+              startEdit(c)
+            }}
+          />
           <Button
             type="text"
             size="small"
@@ -235,6 +287,7 @@ export default function ConversationSidebar({
     <div
       style={{
         width: 260,
+        height: '100%',
         background: 'var(--ant-color-bg-container)',
         borderRadius: 8,
         padding: 12,
@@ -252,7 +305,7 @@ export default function ConversationSidebar({
         onChange={(e) => setSearchInput(e.target.value)}
         style={{ marginTop: 10 }}
       />
-      <div style={{ flex: 1, overflowY: 'auto', marginTop: 10 }}>
+      <div className="chat-scroll" style={{ flex: 1, overflowY: 'auto', marginTop: 10 }}>
         {hasResult ? (
           <>
             {renderGroup('置顶', visible.pinned)}

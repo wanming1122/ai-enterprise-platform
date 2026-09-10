@@ -152,8 +152,12 @@ export default function AttendanceRecord() {
   }
 
   const handleTemplate = async () => {
-    const blob = await attApi.downloadTemplate()
-    saveBlob(blob, '考勤导入模板.xlsx')
+    try {
+      const blob = await attApi.downloadTemplate()
+      saveBlob(blob, '考勤导入模板.xlsx')
+    } catch {
+      // 失败提示已由下载封装统一处理
+    }
   }
 
   const columns = [

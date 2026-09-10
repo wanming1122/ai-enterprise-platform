@@ -109,10 +109,10 @@ def chat_sse(user_id: int, username: str, *, question: str, kb_ids: list[int],
         kbs = validate_kbs(db, kb_ids)
         _ = kbs
 
-        # 1. 会话：续聊校验归属，新会话以首问为标题
+        # 1. 会话：续聊校验归属与软删状态，新会话以首问为标题
         if conversation_id is not None:
             conv = db.get(AIConversation, conversation_id)
-            if conv is None or conv.user_id != user_id:
+            if conv is None or conv.user_id != user_id or conv.status == 2:
                 raise HTTPException(status_code=404, detail="会话不存在")
         else:
             conv = AIConversation(user_id=user_id, title=question[:32], source="kb")
@@ -185,7 +185,9 @@ def chat_sse(user_id: int, username: str, *, question: str, kb_ids: list[int],
 
 def list_conversations(db: Session, user: SysUser, *, page: int = 1, page_size: int = 20):
     q = select(AIConversation).where(
-        AIConversation.user_id == user.id, AIConversation.source != "ai"  # 排除 AI助手会话
+        AIConversation.user_id == user.id,
+        AIConversation.source != "ai",   # 排除 AI助手会话
+        AIConversation.status != 2,      # 排除软删除会话
     )
     total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
     convs = db.scalars(q.order_by(AIConversation.updated_at.desc())
@@ -199,7 +201,7 @@ def list_conversations(db: Session, user: SysUser, *, page: int = 1, page_size: 
 
 def conversation_detail(db: Session, user: SysUser, conversation_id: int) -> dict:
     conv = db.get(AIConversation, conversation_id)
-    if conv is None or conv.user_id != user.id:
+    if conv is None or conv.user_id != user.id or conv.status == 2:
         raise HTTPException(status_code=404, detail="会话不存在")
     messages = db.scalars(
         select(AIMessage).where(AIMessage.conversation_id == conv.id).order_by(AIMessage.id)

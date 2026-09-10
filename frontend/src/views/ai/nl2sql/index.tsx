@@ -58,6 +58,8 @@ export default function NL2SQL() {
   const [generating, setGenerating] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [reviewAction, setReviewAction] = useState<ReviewAction | null>(null)
+  /** 本次审核的目标记录：列表行按钮传行记录，流程区按钮传 current，确定时以此为准 */
+  const [reviewTarget, setReviewTarget] = useState<NL2SQLRecordItem | null>(null)
   const [reviewComment, setReviewComment] = useState('')
   const [reviewSaving, setReviewSaving] = useState(false)
 
@@ -106,19 +108,22 @@ export default function NL2SQL() {
   }
 
   const openReview = (action: ReviewAction, record?: NL2SQLRecordItem) => {
-    if (!record && current?.review_status !== 0) return
+    const target = record ?? current
+    if (!target || target.review_status !== 0) return
+    setReviewTarget(target)
     setReviewAction(action)
     setReviewComment('')
   }
 
   const handleReviewOk = async () => {
-    if (!current || !reviewAction) return
+    if (!reviewTarget || !reviewAction) return
     setReviewSaving(true)
     try {
-      const rec = await nl2sqlApi.review(current.id, reviewAction, reviewComment.trim() || undefined)
+      const rec = await nl2sqlApi.review(reviewTarget.id, reviewAction, reviewComment.trim() || undefined)
       setCurrent((prev) => (prev && prev.id === rec.id ? rec : prev))
       message.success(reviewAction === 'approve' ? '已通过' : '已驳回')
       setReviewAction(null)
+      setReviewTarget(null)
       loadList()
     } catch {
       // 已由拦截器提示
@@ -412,7 +417,10 @@ export default function NL2SQL() {
         title={reviewAction === 'approve' ? '通过该 SQL' : '驳回该 SQL'}
         open={reviewAction !== null}
         onOk={handleReviewOk}
-        onCancel={() => setReviewAction(null)}
+        onCancel={() => {
+          setReviewAction(null)
+          setReviewTarget(null)
+        }}
         confirmLoading={reviewSaving}
         okText={reviewAction === 'approve' ? '确认通过' : '确认驳回'}
         okButtonProps={reviewAction === 'reject' ? { danger: true } : undefined}

@@ -106,9 +106,9 @@ export const kbApi = {
   /** 新建知识库（embedding_dimension 缺省时后端自动探测） */
   create: (data: { name: string; description?: string; chunk_size?: number; chunk_overlap?: number }) =>
     post<KBBase>('/kb/bases', data),
-  /** 编辑知识库（模型与维度不可改） */
+  /** 编辑知识库（模型与维度不可改）；切片参数变更时返回 requires_rebuild=true 提示需重建 */
   update: (id: number, data: { name?: string; description?: string; chunk_size?: number; chunk_overlap?: number }) =>
-    put<KBBase>(`/kb/bases/${id}`, data),
+    put<KBBase & { requires_rebuild?: boolean }>(`/kb/bases/${id}`, data),
   /** 软删除知识库及其下全部文件 */
   remove: (id: number) => del(`/kb/bases/${id}`),
   /** 重建向量索引，返回 {kb_id, chunks} */
@@ -125,8 +125,8 @@ export const kbApi = {
     kbId: number,
     params: { parse_status?: number; page?: number; page_size?: number },
   ) => get<PageResult<KBFileItem>>(`/kb/bases/${kbId}/files`, { params }),
-  /** 切片分页预览 */
-  chunks: (fileId: number, params: { page?: number; page_size?: number }) =>
+  /** 切片分页预览（keyword 非空时按正文模糊过滤） */
+  chunks: (fileId: number, params: { keyword?: string; page?: number; page_size?: number }) =>
     get<PageResult<KBChunkItem>>(`/kb/files/${fileId}/chunks`, { params }),
   /** 软删除文件 */
   removeFile: (fileId: number) => del(`/kb/files/${fileId}`),

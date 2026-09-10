@@ -13,6 +13,8 @@ export interface AIModelItem {
   api_key_masked: string
   model_name: string
   temperature: number | null
+  /** 上下文窗口（token，仅 llm；空则后端回退全局常量） */
+  context_window: number | null
   remark: string | null
   is_default: boolean
   status: number
@@ -29,6 +31,7 @@ export interface AIModelSavePayload {
   api_key?: string
   model_name: string
   temperature?: number | null
+  context_window?: number | null
   remark?: string
   is_default?: boolean
   status?: number

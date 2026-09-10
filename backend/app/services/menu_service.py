@@ -17,25 +17,25 @@ _TYPE_TEXT = {1: "dir", 2: "page", 3: "button"}
 
 
 def is_super_admin(db: Session, user_id: int) -> bool:
-    """用户是否绑定超级管理员角色（role_type=1）。"""
+    """用户是否绑定启用中的超级管理员角色（role_type=1；停用/软删角色不生效）。"""
     return (
         db.scalar(
             select(SysRole.id)
             .join(SysUserRoleRelation, SysUserRoleRelation.role_id == SysRole.id)
-            .where(SysUserRoleRelation.user_id == user_id, SysRole.role_type == 1)
+            .where(SysUserRoleRelation.user_id == user_id, SysRole.role_type == 1, SysRole.status == 1)
         )
         is not None
     )
 
 
 def _authorized_menu_ids(db: Session, user_id: int) -> list[int]:
-    """返回用户绑定角色授权范围内的菜单 ID。"""
+    """返回用户绑定角色授权范围内的菜单 ID（仅统计启用中的角色，停用/软删即回收权限）。"""
     return list(
         db.scalars(
             select(SysRoleMenuRelation.menu_id)
             .join(SysRole, SysRole.id == SysRoleMenuRelation.role_id)
             .join(SysUserRoleRelation, SysUserRoleRelation.role_id == SysRole.id)
-            .where(SysUserRoleRelation.user_id == user_id)
+            .where(SysUserRoleRelation.user_id == user_id, SysRole.status == 1)
         ).all()
     )
 
@@ -101,7 +101,12 @@ def collect_permissions(db: Session, user_id: int) -> list[str]:
         db.scalars(
             select(SysPermission.code)
             .join(SysMenuPermissionRelation, SysMenuPermissionRelation.permission_id == SysPermission.id)
-            .where(SysMenuPermissionRelation.menu_id.in_(authorized), SysPermission.status == 1)
+            .join(SysMenu, SysMenu.id == SysMenuPermissionRelation.menu_id)
+            .where(
+                SysMenuPermissionRelation.menu_id.in_(authorized),
+                SysPermission.status == 1,
+                SysMenu.status == 1,  # 停用/软删菜单的关联权限一并回收
+            )
         ).all()
     )
     return sorted(menu_codes | rel_codes)
