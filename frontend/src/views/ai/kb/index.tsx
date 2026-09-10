@@ -3,13 +3,16 @@ import {
   Button,
   Card,
   Drawer,
+  Empty,
   Form,
   Input,
   InputNumber,
   Modal,
+  Pagination,
   Popconfirm,
   Select,
   Space,
+  Spin,
   Table,
   Tag,
   Tooltip,
@@ -20,6 +23,7 @@ import type { UploadFile } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useCallback, useEffect, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
+import { useUserStore } from '@/stores/user'
 import { kbApi, type KBBase, type KBChunkItem, type KBFileItem } from '@/api/kb'
 
 /** 解析状态 → 标签（0待解析 1解析中 2已入库 3失败） */
@@ -39,6 +43,9 @@ const fmtSize = (n: number) =>
 
 export default function KBManage() {
   const { message, modal } = App.useApp()
+  const permissions = useUserStore((s) => s.permissions)
+  /** 内容预览为只读入口：需 file:list（与「文件管理」「切片预览」一致，无权限不可点开） */
+  const canPreview = permissions.includes('file:list')
   const [filterForm] = Form.useForm<{ keyword?: string }>()
   const [kbForm] = Form.useForm<{
     name: string
@@ -74,15 +81,17 @@ export default function KBManage() {
   /** 手动刷新与轮询共用的自增信号：变更后触发文件列表重载 */
   const [filesTick, setFilesTick] = useState(0)
 
-  // ---------- 切片预览抽屉 ----------
-  const [chunksOpen, setChunksOpen] = useState(false)
-  const [chunksFile, setChunksFile] = useState<KBFileItem | null>(null)
-  const [chunks, setChunks] = useState<KBChunkItem[]>([])
-  const [chunksTotal, setChunksTotal] = useState(0)
-  const [chunksLoading, setChunksLoading] = useState(false)
-  const [chunksPage, setChunksPage] = useState(1)
-  /** 切片内容搜索关键词（空 = 不过滤） */
-  const [chunksKeyword, setChunksKeyword] = useState<string | undefined>()
+  // ---------- 内容预览弹窗（阅读器式：左文件、右切片全文） ----------
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewKb, setPreviewKb] = useState<KBBase | null>(null)
+  const [previewFiles, setPreviewFiles] = useState<KBFileItem[]>([])
+  const [previewFilesLoading, setPreviewFilesLoading] = useState(false)
+  const [previewFile, setPreviewFile] = useState<KBFileItem | null>(null)
+  const [previewChunks, setPreviewChunks] = useState<KBChunkItem[]>([])
+  const [previewChunksTotal, setPreviewChunksTotal] = useState(0)
+  const [previewChunksLoading, setPreviewChunksLoading] = useState(false)
+  const [previewChunksPage, setPreviewChunksPage] = useState(1)
+  const [previewKeyword, setPreviewKeyword] = useState<string | undefined>()
 
   const loadList = useCallback(async () => {
     setLoading(true)
@@ -127,26 +136,6 @@ export default function KBManage() {
     const timer = setTimeout(() => setFilesTick((n) => n + 1), 2000)
     return () => clearTimeout(timer)
   }, [filesOpen, hasPending, filesTick])
-
-  const loadChunks = useCallback(async () => {
-    if (!chunksFile) return
-    setChunksLoading(true)
-    try {
-      const res = await kbApi.chunks(chunksFile.id, {
-        keyword: chunksKeyword,
-        page: chunksPage,
-        page_size: 10,
-      })
-      setChunks(res.list)
-      setChunksTotal(res.total)
-    } finally {
-      setChunksLoading(false)
-    }
-  }, [chunksFile, chunksPage, chunksKeyword])
-
-  useEffect(() => {
-    if (chunksOpen) loadChunks()
-  }, [chunksOpen, loadChunks])
 
   const handleSearch = (values: { keyword?: string }) => {
     setKeyword(values.keyword?.trim() || undefined)
@@ -244,15 +233,71 @@ export default function KBManage() {
     loadList()
   }
 
-  const openChunks = (record: KBFileItem) => {
-    setChunksFile(record)
-    setChunksPage(1)
-    setChunksKeyword(undefined)
-    setChunksOpen(true)
+  // ---------- 内容预览 ----------
+  const loadPreviewChunks = useCallback(async () => {
+    if (!previewFile) return
+    setPreviewChunksLoading(true)
+    try {
+      const res = await kbApi.chunks(previewFile.id, {
+        keyword: previewKeyword,
+        page: previewChunksPage,
+        page_size: 20,
+      })
+      setPreviewChunks(res.list)
+      setPreviewChunksTotal(res.total)
+    } finally {
+      setPreviewChunksLoading(false)
+    }
+  }, [previewFile, previewKeyword, previewChunksPage])
+
+  useEffect(() => {
+    if (previewOpen) loadPreviewChunks()
+  }, [previewOpen, loadPreviewChunks])
+
+  const selectPreviewFile = (f: KBFileItem) => {
+    if (f.parse_status !== 2) {
+      message.info('该文件尚未解析完成，暂无可预览内容')
+      return
+    }
+    setPreviewFile(f)
+    setPreviewChunksPage(1)
+    setPreviewKeyword(undefined)
+  }
+
+  const openPreview = async (record: KBBase) => {
+    setPreviewKb(record)
+    setPreviewFiles([])
+    setPreviewFile(null)
+    setPreviewChunks([])
+    setPreviewChunksTotal(0)
+    setPreviewChunksPage(1)
+    setPreviewKeyword(undefined)
+    setPreviewOpen(true)
+    setPreviewFilesLoading(true)
+    try {
+      const res = await kbApi.files(record.id, { page: 1, page_size: 100 })
+      setPreviewFiles(res.list)
+      // 默认选中首个已入库文件，开箱即可读
+      setPreviewFile(res.list.find((f) => f.parse_status === 2) ?? null)
+    } finally {
+      setPreviewFilesLoading(false)
+    }
   }
 
   const kbColumns = [
-    { title: '名称', dataIndex: 'name', width: 170, render: (v: string) => <Typography.Text strong>{v}</Typography.Text> },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      width: 170,
+      render: (v: string) =>
+        canPreview ? (
+          <Tooltip title="点击查看内容">
+            <Typography.Text strong style={{ color: 'var(--ant-color-primary)' }}>{v}</Typography.Text>
+          </Tooltip>
+        ) : (
+          <Typography.Text strong>{v}</Typography.Text>
+        ),
+    },
     { title: '描述', dataIndex: 'description', ellipsis: true, render: (v: string | null) => v || '-' },
     { title: 'Embedding 模型', dataIndex: 'embedding_model', width: 170 },
     { title: '维度', dataIndex: 'embedding_dimension', width: 70 },
@@ -266,27 +311,30 @@ export default function KBManage() {
       width: 265,
       fixed: 'right' as const,
       render: (_: unknown, record: KBBase) => (
-        <Space size={0}>
-          <Button type="link" size="small" onClick={() => openFiles(record)}>文件管理</Button>
-          <HasPermission code="kb:update">
-            <Button type="link" size="small" onClick={() => handleRebuild(record)}>重建</Button>
-            <Button type="link" size="small" onClick={() => openKbModal(record)}>编辑</Button>
-          </HasPermission>
-          <HasPermission code="kb:delete">
-            <Popconfirm
-              title="确认删除该知识库？"
-              description="其下全部文件将一并删除，列表不再显示。"
-              onConfirm={() => {
-                kbApi.remove(record.id).then(() => {
-                  message.success('已删除')
-                  loadList()
-                })
-              }}
-            >
-              <Button type="link" size="small" danger>删除</Button>
-            </Popconfirm>
-          </HasPermission>
-        </Space>
+        // 阻止冒泡：操作按钮点击不触发整行「内容预览」
+        <div onClick={(e) => e.stopPropagation()}>
+          <Space size={0}>
+            <Button type="link" size="small" onClick={() => openFiles(record)}>文件管理</Button>
+            <HasPermission code="kb:update">
+              <Button type="link" size="small" onClick={() => handleRebuild(record)}>重建</Button>
+              <Button type="link" size="small" onClick={() => openKbModal(record)}>编辑</Button>
+            </HasPermission>
+            <HasPermission code="kb:delete">
+              <Popconfirm
+                title="确认删除该知识库？"
+                description="其下全部文件将一并删除，列表不再显示。"
+                onConfirm={() => {
+                  kbApi.remove(record.id).then(() => {
+                    message.success('已删除')
+                    loadList()
+                  })
+                }}
+              >
+                <Button type="link" size="small" danger>删除</Button>
+              </Popconfirm>
+            </HasPermission>
+          </Space>
+        </div>
       ),
     },
   ]
@@ -316,9 +364,6 @@ export default function KBManage() {
       width: 200,
       render: (_: unknown, record: KBFileItem) => (
         <Space size={0}>
-          <Button type="link" size="small" disabled={record.parse_status !== 2} onClick={() => openChunks(record)}>
-            切片预览
-          </Button>
           <HasPermission code="file:reparse">
             <Popconfirm
               title="重新解析该文件？"
@@ -339,33 +384,6 @@ export default function KBManage() {
           </HasPermission>
         </Space>
       ),
-    },
-  ]
-
-  const chunkColumns = [
-    { title: '#', dataIndex: 'chunk_index', width: 50 },
-    {
-      title: '内容',
-      dataIndex: 'content',
-      render: (v: string) => (
-        <Typography.Paragraph ellipsis={{ rows: 3, expandable: true, symbol: '展开' }} style={{ marginBottom: 0 }}>
-          {v}
-        </Typography.Paragraph>
-      ),
-    },
-    {
-      title: '标题路径',
-      dataIndex: 'title_path',
-      width: 180,
-      ellipsis: true,
-      render: (v: string | null) => v || '-',
-    },
-    { title: '页码', dataIndex: 'page', width: 65, render: (v: number | null) => (v == null ? '-' : v) },
-    {
-      title: '类型',
-      dataIndex: 'chunk_type',
-      width: 80,
-      render: (v: string) => <Tag>{v === 'text' ? '文本' : v === 'table' ? '表格' : '图片描述'}</Tag>,
     },
   ]
 
@@ -394,6 +412,9 @@ export default function KBManage() {
         columns={kbColumns}
         dataSource={list}
         loading={loading}
+        onRow={(record) =>
+          canPreview ? { onClick: () => openPreview(record), style: { cursor: 'pointer' } } : {}
+        }
         pagination={{
           current: page,
           pageSize,
@@ -530,38 +551,133 @@ export default function KBManage() {
         )}
       </Drawer>
 
-      {/* 切片预览抽屉（叠加在文件抽屉之上） */}
-      <Drawer
-        title={`切片预览：${chunksFile?.file_name ?? ''}`}
-        open={chunksOpen}
-        onClose={() => setChunksOpen(false)}
-        width={760}
-        zIndex={1010}
+      {/* 内容预览弹窗（阅读器式：左文件列表、右切片全文） */}
+      <Modal
+        title={`内容预览：${previewKb?.name ?? ''}`}
+        open={previewOpen}
+        onCancel={() => setPreviewOpen(false)}
+        footer={null}
+        width={1040}
+        styles={{ body: { paddingTop: 8 } }}
       >
-        <Input.Search
-          allowClear
-          placeholder="按切片内容搜索"
-          style={{ marginBottom: 12 }}
-          onSearch={(v) => {
-            setChunksKeyword(v.trim() || undefined)
-            setChunksPage(1)
-          }}
-        />
-        <Table
-          rowKey="id"
-          size="small"
-          columns={chunkColumns}
-          dataSource={chunks}
-          loading={chunksLoading}
-          pagination={{
-            current: chunksPage,
-            pageSize: 10,
-            total: chunksTotal,
-            showTotal: (t) => `共 ${t} 片`,
-            onChange: (p) => setChunksPage(p),
-          }}
-        />
-      </Drawer>
+        <div style={{ display: 'flex', gap: 16, height: 560 }}>
+          {/* 左：文件列表 */}
+          <div
+            style={{
+              width: 250,
+              flexShrink: 0,
+              borderRight: '1px solid var(--ant-color-border-secondary)',
+              overflowY: 'auto',
+              paddingRight: 8,
+            }}
+          >
+            {previewFilesLoading ? (
+              <div style={{ textAlign: 'center', paddingTop: 40 }}>
+                <Spin />
+              </div>
+            ) : previewFiles.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无文件" />
+            ) : (
+              previewFiles.map((f) => {
+                const tag = PARSE_TAG[f.parse_status] || { text: '未知', color: 'default' }
+                const active = previewFile?.id === f.id
+                return (
+                  <div
+                    key={f.id}
+                    onClick={() => selectPreviewFile(f)}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: 6,
+                      marginBottom: 4,
+                      cursor: f.parse_status === 2 ? 'pointer' : 'not-allowed',
+                      background: active ? 'var(--ant-color-primary-bg)' : undefined,
+                    }}
+                  >
+                    <Typography.Text ellipsis={{ tooltip: f.file_name }} style={{ display: 'block' }}>
+                      {f.file_name}
+                    </Typography.Text>
+                    <Space size={4} style={{ marginTop: 4 }}>
+                      <Tag color={tag.color} style={{ marginInlineEnd: 0 }}>{tag.text}</Tag>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>{f.chunk_count} 片</Typography.Text>
+                    </Space>
+                  </div>
+                )
+              })
+            )}
+          </div>
+
+          {/* 右：切片全文 */}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <Typography.Text strong ellipsis style={{ flex: 1, minWidth: 0 }}>
+                {previewFile ? previewFile.file_name : '请选择左侧文件'}
+              </Typography.Text>
+              {previewFile && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  共 {previewChunksTotal} 片
+                </Typography.Text>
+              )}
+            </div>
+            <Input.Search
+              allowClear
+              placeholder="按切片内容搜索"
+              style={{ marginBottom: 10 }}
+              disabled={!previewFile}
+              onSearch={(v) => {
+                setPreviewKeyword(v.trim() || undefined)
+                setPreviewChunksPage(1)
+              }}
+            />
+            <div style={{ flex: 1, overflowY: 'auto', paddingRight: 4 }}>
+              {!previewFile ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择左侧已入库文件查看切片内容" />
+              ) : previewChunksLoading ? (
+                <div style={{ textAlign: 'center', paddingTop: 40 }}>
+                  <Spin />
+                </div>
+              ) : previewChunks.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无切片" />
+              ) : (
+                previewChunks.map((c) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      border: '1px solid var(--ant-color-border-secondary)',
+                      borderRadius: 6,
+                      padding: '10px 12px',
+                      marginBottom: 10,
+                    }}
+                  >
+                    <Space size={4} wrap style={{ marginBottom: 6 }}>
+                      <Tag style={{ marginInlineEnd: 0 }}>#{c.chunk_index}</Tag>
+                      {c.title_path && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{c.title_path}</Tag>}
+                      {c.page != null && <Tag style={{ marginInlineEnd: 0 }}>第{c.page}页</Tag>}
+                      <Tag style={{ marginInlineEnd: 0 }}>
+                        {c.chunk_type === 'text' ? '文本' : c.chunk_type === 'table' ? '表格' : '图片描述'}
+                      </Tag>
+                    </Space>
+                    <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>
+                      {c.content}
+                    </Typography.Paragraph>
+                  </div>
+                ))
+              )}
+            </div>
+            {previewFile && previewChunksTotal > 20 && (
+              <div style={{ textAlign: 'right', marginTop: 8 }}>
+                <Pagination
+                  size="small"
+                  current={previewChunksPage}
+                  pageSize={20}
+                  total={previewChunksTotal}
+                  showSizeChanger={false}
+                  onChange={(p) => setPreviewChunksPage(p)}
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      </Modal>
     </Card>
   )
 }

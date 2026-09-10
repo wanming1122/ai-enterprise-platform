@@ -11,7 +11,7 @@ from app.models.kb import KBKnowledgeBase
 from app.models.user import SysUser
 from app.db.session import SessionLocal
 from app.services import kb_rag_service
-from app.services.kb_rag_service import retrieve_with_crag
+from app.services.kb_rag_service import retrieve, retrieve_with_crag
 from app.services.llm_client import chat_once, chat_stream
 from app.services.operation_log_service import write_log
 
