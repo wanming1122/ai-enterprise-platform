@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import type { AxiosError } from 'axios'
+import { message } from 'antd'
 import { clearTokens, get, getAccessToken, getRefreshToken, post, setTokens } from '@/api/request'
 import type { LoginResult, MenuItem, UserInfo } from '@/types'
 
@@ -71,13 +73,41 @@ export const useUserStore = create<UserState>((set) => ({
       set({ initialized: true })
       return
     }
-    try {
-      const data = await get<{ user: UserInfo; menus: MenuItem[]; permissions: string[] }>('/auth/me')
-      // /auth/me 可能触发拦截器内 401 刷新并轮换了 token，取最新值回写，避免 store 留旧令牌
-      set({ token: getAccessToken() ?? token, userInfo: data.user, menus: data.menus, permissions: data.permissions, initialized: true })
-    } catch {
-      clearTokens()
-      set({ token: '', userInfo: null, menus: [], permissions: [], initialized: true })
+    // 仅当服务端明确判定会话无效（401/403）才清理本地令牌；
+    // 网络错误/后端未就绪（5xx、超时）视为暂时不可达，保留令牌并短暂重试，
+    // 否则一键启动后端尚未就绪时打开页面会把用户误判为未登录并强制退出。
+    const MAX_ATTEMPTS = 3
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const data = await get<{ user: UserInfo; menus: MenuItem[]; permissions: string[] }>(
+          '/auth/me',
+          { silentAuth: true },
+        )
+        // /auth/me 可能触发拦截器内 401 刷新并轮换了 token，取最新值回写，避免 store 留旧令牌
+        set({
+          token: getAccessToken() ?? token,
+          userInfo: data.user,
+          menus: data.menus,
+          permissions: data.permissions,
+          initialized: true,
+        })
+        return
+      } catch (e) {
+        const status = (e as AxiosError)?.response?.status
+        if (status === 401 || status === 403) {
+          clearTokens()
+          set({ token: '', userInfo: null, menus: [], permissions: [], initialized: true })
+          return
+        }
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)))
+          continue
+        }
+        // 多次仍不可达：保留 localStorage 中的令牌，本次回到登录页；
+        // 用户刷新页面（后端就绪后）即可自动恢复会话，无需重新输入密码
+        set({ token: '', userInfo: null, menus: [], permissions: [], initialized: true })
+        message.error('服务连接失败，请刷新页面重试')
+      }
     }
   },
 

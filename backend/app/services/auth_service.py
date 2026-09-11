@@ -86,6 +86,15 @@ def _lock_detail(message: str, remain_seconds: int) -> dict:
     return {"message": message, "locked": True, "remain_seconds": remain_seconds}
 
 
+def _ip_key(ip: str, username: str) -> str:
+    """登录限流计数键：IP + 账号。
+
+    本机开发或内网共用出口 IP 时，若只按 IP 统计，任意账号的错误尝试都会累计到一起，
+    达到阈值后同网段所有人一起被锁死；按账号分桶后互不影响，账号维度的锁定仍独立生效。
+    """
+    return f"{ip}|{username}"
+
+
 def _record_fail(db: Session, user: SysUser | None, username: str, ip: str) -> dict | None:
     """记录一次登录失败，累计达到阈值触发账号/IP 锁定；返回刚触发的锁定详情。"""
     now = datetime.now()
@@ -99,13 +108,13 @@ def _record_fail(db: Session, user: SysUser | None, username: str, ip: str) -> d
             )
         db.commit()
 
-    rec = _ip_fail.setdefault(ip, {"count": 0, "lock_until": None})
+    rec = _ip_fail.setdefault(_ip_key(ip, username), {"count": 0, "lock_until": None})
     rec["count"] += 1
     if rec["count"] >= MAX_IP_FAIL:
         rec["lock_until"] = now + timedelta(minutes=LOCK_MINUTES)
         if locked is None:
             locked = _lock_detail(
-                f"IP 连续失败{MAX_IP_FAIL}次，已锁定{LOCK_MINUTES}分钟", LOCK_MINUTES * 60
+                f"登录失败次数过多，已锁定{LOCK_MINUTES}分钟", LOCK_MINUTES * 60
             )
 
     write_log(
@@ -125,15 +134,16 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
     """账号密码登录：限流锁定检查 → 密码校验 → 状态校验 → 更新登录信息 → 写日志。"""
     now = datetime.now()
 
-    # IP 锁定检查（锁定到期后清零计数，避免一次超限后每次失败都续锁成准永久限流）
-    ip_lock = _ip_fail.get(ip)
+    # 登录限流检查（键为 IP + 账号；到期后清零计数，避免一次超限后每次失败都续锁成准永久限流）
+    limit_key = _ip_key(ip, username)
+    ip_lock = _ip_fail.get(limit_key)
     if ip_lock and ip_lock.get("lock_until"):
         if ip_lock["lock_until"] > now:
             remain_s = max(1, int((ip_lock["lock_until"] - now).total_seconds()))
             remain = max(1, -(-remain_s // 60))
             raise HTTPException(
                 status_code=403,
-                detail=_lock_detail(f"IP 登录过于频繁，请 {remain} 分钟后重试", remain_s),
+                detail=_lock_detail(f"登录失败次数过多，请 {remain} 分钟后重试", remain_s),
             )
         ip_lock["count"] = 0
         ip_lock["lock_until"] = None
@@ -148,6 +158,11 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
             status_code=403,
             detail=_lock_detail(f"账号已锁定，请 {remain} 分钟后重试", remain_s),
         )
+    # 锁定已到期：同步清零失败计数，避免"解封后再错一次立刻又锁 15 分钟"的粘滞锁
+    if user is not None and user.locked_until is not None and user.locked_until <= now:
+        user.failed_login_count = 0
+        user.locked_until = None
+        db.commit()
 
     # 密码校验（不区分账号不存在与密码错误，避免账号枚举）；
     # 账号不存在时也执行一次同代价哈希校验，拉平响应时间防用户名枚举侧信道
@@ -173,7 +188,7 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
     user.last_login_ip = ip
     user.last_login_at = now
     db.commit()
-    _ip_fail.pop(ip, None)
+    _ip_fail.pop(limit_key, None)
 
     write_log(db, user_id=user.id, username=user.username, module="认证",
               action="登录", ip=ip, result=1)
@@ -200,10 +215,10 @@ def refresh_tokens(db: Session, refresh_token: str) -> dict:
 
 
 def logout(db: Session, refresh_token: str) -> None:
-    """退出登录：将刷新令牌 jti 加入黑名单（无效令牌静默忽略）。"""
+    """退出登录：将刷新令牌立即作废（无效令牌静默忽略）。"""
     try:
         payload = decode_token(refresh_token, REFRESH_TYPE)
-        blacklist_refresh_jti(payload["jti"])
+        blacklist_refresh_jti(payload["jti"], grace_seconds=0)
     except ValueError:
         pass
 

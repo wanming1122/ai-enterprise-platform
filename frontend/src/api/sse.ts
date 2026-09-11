@@ -7,7 +7,7 @@
  * - 非 2xx / 无 body 时按统一响应结构解析 message 回调 onError（不抛出）
  * - 按空行切块、逐块解析为 (event, JSON data)，交由调用方分发
  */
-import { clearTokens, getAccessToken, refreshAccessToken } from './request'
+import { clearTokens, getAccessToken, refreshAccessToken, RefreshError } from './request'
 
 /** 解析单个 SSE 事件块（event: xxx + data: xxx，缺省 event 为 message） */
 export function parseSSEBlock(block: string): { event: string; data: string } | null {
@@ -55,7 +55,11 @@ export async function fetchSSE(
   if (res.status === 401) {
     try {
       res = await doFetch(await refreshAccessToken())
-    } catch {
+    } catch (e) {
+      // 网络/服务不可达：保留本地令牌，不当作登录失效（避免短暂断网或后端重启误踢）
+      if (e instanceof RefreshError && e.kind === 'network') {
+        throw new Error('无法连接服务器，请稍后重试')
+      }
       clearTokens()
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
