@@ -64,9 +64,21 @@ def _code_of(status_code: int) -> int:
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # 结构化 detail（如登录锁定的 {message, locked, remain_seconds}）原样透传到 data，
+    # 供前端渲染倒计时；普通字符串 detail 保持向后兼容。
+    detail = exc.detail
+    if isinstance(detail, Mapping):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error(
+                code=_code_of(exc.status_code),
+                message=str(detail.get("message") or "请求失败"),
+                data=detail,
+            ),
+        )
     return JSONResponse(
         status_code=exc.status_code,
-        content=error(code=_code_of(exc.status_code), message=str(exc.detail)),
+        content=error(code=_code_of(exc.status_code), message=str(detail)),
     )
 
 

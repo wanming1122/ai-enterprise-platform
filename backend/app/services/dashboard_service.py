@@ -30,11 +30,15 @@ def _month_range(d: date) -> tuple[date, date]:
     return first, nxt
 
 
-def get_summary(db: Session) -> dict:
+def get_summary(db: Session, user: SysUser) -> dict:
+    """工作台统计：管理员看全公司聚合，普通员工仅看基础看板（敏感字段不下发）。"""
+    from app.services.menu_service import is_admin_user
+
+    is_admin = is_admin_user(db, user.id)
     today = date.today()
     month_first, month_next = _month_range(today)
 
-    # ---------- 统计卡片 ----------
+    # ---------- 基础字段（所有角色可见） ----------
     # 与「各部门在职人数」图表同口径：只统计在职（status=1）账号，停用/待审批账号不计入
     user_count = db.scalar(select(func.count()).select_from(SysUser).where(SysUser.status == 1)) or 0
     dept_count = db.scalar(
@@ -43,25 +47,6 @@ def get_summary(db: Session) -> dict:
     position_count = db.scalar(
         select(func.count()).select_from(SysPosition).where(SysPosition.status == 1)
     ) or 0
-    month_abnormal_count = db.scalar(
-        select(func.count()).select_from(AttRecord).where(
-            AttRecord.att_date >= month_first,
-            AttRecord.att_date < month_next,
-            AttRecord.status.in_(ABNORMAL_STATUSES),
-        )
-    ) or 0
-
-    payroll_month = db.scalar(select(SalPayroll.year_month).order_by(SalPayroll.year_month.desc()).limit(1))
-    payroll_count = 0
-    payroll_total = 0.0
-    if payroll_month:
-        payroll_count = db.scalar(
-            select(func.count()).select_from(SalPayroll).where(SalPayroll.year_month == payroll_month)
-        ) or 0
-        payroll_total = float(db.scalar(
-            select(func.coalesce(func.sum(SalPayroll.total_salary), 0))
-            .where(SalPayroll.year_month == payroll_month)
-        ) or 0)
 
     # ---------- 部门人数分布（含 0 人部门；在职但未挂部门的账号归入「未分配部门」） ----------
     dept_rows = db.execute(
@@ -90,47 +75,80 @@ def get_summary(db: Session) -> dict:
     ).all()
     position_distribution = [{"name": name, "value": int(count)} for name, count in position_rows]
 
-    # ---------- 本月考勤状态分布 ----------
-    status_rows = db.execute(
-        select(AttRecord.status, func.count())
-        .where(AttRecord.att_date >= month_first, AttRecord.att_date < month_next)
-        .group_by(AttRecord.status)
-    ).all()
-    attendance_month_status = [
-        {"name": ATT_STATUS_LABELS.get(status, status), "value": int(count)}
-        for status, count in status_rows
-    ]
+    # ---------- 敏感字段（仅管理员；普通员工不下发，避免泄露薪资/人力/考勤敏感数据） ----------
+    if is_admin:
+        month_abnormal_count = db.scalar(
+            select(func.count()).select_from(AttRecord).where(
+                AttRecord.att_date >= month_first,
+                AttRecord.att_date < month_next,
+                AttRecord.status.in_(ABNORMAL_STATUSES),
+            )
+        ) or 0
 
-    # ---------- 近6个月考勤异常趋势（含当月，往前推，补零保证连续） ----------
-    months: list[str] = []
-    for i in range(6):
-        mm = today.month - 5 + i
-        yy = today.year + (mm - 1) // 12
-        mm = (mm - 1) % 12 + 1
-        months.append(f"{yy:04d}-{mm:02d}")
-    trend_start = date(int(months[0][:4]), int(months[0][5:7]), 1)
-    trend_rows = db.execute(
-        select(func.date_format(AttRecord.att_date, "%Y-%m"), func.count())
-        .where(
-            AttRecord.att_date >= trend_start,
-            AttRecord.att_date < month_next,
-            AttRecord.status.in_(ABNORMAL_STATUSES),
-        )
-        .group_by(func.date_format(AttRecord.att_date, "%Y-%m"))
-    ).all()
-    trend_map = {month: int(count) for month, count in trend_rows}
-    attendance_trend = [{"month": m, "value": trend_map.get(m, 0)} for m in months]
+        payroll_month = db.scalar(select(SalPayroll.year_month).order_by(SalPayroll.year_month.desc()).limit(1))
+        payroll_count = 0
+        payroll_total = 0.0
+        if payroll_month:
+            payroll_count = db.scalar(
+                select(func.count()).select_from(SalPayroll).where(SalPayroll.year_month == payroll_month)
+            ) or 0
+            payroll_total = float(db.scalar(
+                select(func.coalesce(func.sum(SalPayroll.total_salary), 0))
+                .where(SalPayroll.year_month == payroll_month)
+            ) or 0)
 
-    # ---------- 薪资成本趋势（近6个月） ----------
-    salary_trend = _get_salary_trend(db, today, months)
+        # 本月考勤状态分布
+        status_rows = db.execute(
+            select(AttRecord.status, func.count())
+            .where(AttRecord.att_date >= month_first, AttRecord.att_date < month_next)
+            .group_by(AttRecord.status)
+        ).all()
+        attendance_month_status = [
+            {"name": ATT_STATUS_LABELS.get(status, status), "value": int(count)}
+            for status, count in status_rows
+        ]
 
-    # ---------- 各部门薪资分布（最新月份） ----------
-    salary_by_dept = _get_salary_by_department(db, payroll_month)
+        # 近6个月考勤异常趋势（含当月，往前推，补零保证连续）
+        months: list[str] = []
+        for i in range(6):
+            mm = today.month - 5 + i
+            yy = today.year + (mm - 1) // 12
+            mm = (mm - 1) % 12 + 1
+            months.append(f"{yy:04d}-{mm:02d}")
+        trend_start = date(int(months[0][:4]), int(months[0][5:7]), 1)
+        trend_rows = db.execute(
+            select(func.date_format(AttRecord.att_date, "%Y-%m"), func.count())
+            .where(
+                AttRecord.att_date >= trend_start,
+                AttRecord.att_date < month_next,
+                AttRecord.status.in_(ABNORMAL_STATUSES),
+            )
+            .group_by(func.date_format(AttRecord.att_date, "%Y-%m"))
+        ).all()
+        trend_map = {month: int(count) for month, count in trend_rows}
+        attendance_trend = [{"month": m, "value": trend_map.get(m, 0)} for m in months]
 
-    # ---------- 人力结构分析 ----------
-    headcount_structure = _get_headcount_structure(db, today)
+        # 薪资成本趋势（近6个月）
+        salary_trend = _get_salary_trend(db, today, months)
+
+        # 各部门薪资分布（最新月份）
+        salary_by_dept = _get_salary_by_department(db, payroll_month)
+
+        # 人力结构分析
+        headcount_structure = _get_headcount_structure(db, today)
+    else:
+        month_abnormal_count = 0
+        payroll_month = None
+        payroll_count = 0
+        payroll_total = 0.0
+        attendance_month_status = []
+        attendance_trend = []
+        salary_trend = []
+        salary_by_dept = []
+        headcount_structure = {"gender_distribution": [], "age_distribution": []}
 
     return {
+        "is_admin": is_admin,
         "user_count": int(user_count),
         "dept_count": int(dept_count),
         "position_count": int(position_count),

@@ -28,6 +28,22 @@ def is_super_admin(db: Session, user_id: int) -> bool:
     )
 
 
+def is_admin_user(db: Session, user_id: int) -> bool:
+    """用户是否绑定启用中的管理员角色（超级管理员 role_type=1 或普通管理员 role_type=2）。"""
+    return (
+        db.scalar(
+            select(SysRole.id)
+            .join(SysUserRoleRelation, SysUserRoleRelation.role_id == SysRole.id)
+            .where(
+                SysUserRoleRelation.user_id == user_id,
+                SysRole.role_type.in_([1, 2]),
+                SysRole.status == 1,
+            )
+        )
+        is not None
+    )
+
+
 def _authorized_menu_ids(db: Session, user_id: int) -> list[int]:
     """返回用户绑定角色授权范围内的菜单 ID（仅统计启用中的角色，停用/软删即回收权限）。"""
     return list(

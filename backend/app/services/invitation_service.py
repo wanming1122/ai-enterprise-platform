@@ -19,7 +19,7 @@ from app.models.user_role_relation import SysUserRoleRelation
 from app.schemas.invitation import InvitationAcceptIn, InvitationCreateIn
 from app.services.auth_service import pwd_context
 from app.services.operation_log_service import write_log
-from app.services.user_service import validate_password
+from app.services.user_service import phone_exists, validate_password
 
 INVITATION_STATUS = {0: "待发送", 1: "已发送", 2: "已打开", 3: "已注册", 4: "已过期", 5: "已撤销", 6: "处理失败"}
 # 允许注册/重发/撤销的中间态
@@ -223,6 +223,8 @@ def accept_invitation(db: Session, token: str, data: InvitationAcceptIn, ip: str
         raise HTTPException(status_code=422, detail="该邀请已过期")
     if db.scalar(select(func.count()).select_from(SysUser).where(SysUser.username == data.username)):
         raise HTTPException(status_code=422, detail="该用户名已被使用")
+    if inv.phone and phone_exists(db, inv.phone):
+        raise HTTPException(status_code=422, detail="手机号已被使用")
     validate_password(data.password)
     # 注册时二次校验预设角色（角色可能在创建后被停用/删除/改为超管类型）
     if inv.role_id:

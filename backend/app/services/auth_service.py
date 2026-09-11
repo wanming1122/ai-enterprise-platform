@@ -81,23 +81,32 @@ def _auth_payload(db: Session, user: SysUser) -> dict:
     }
 
 
-def _record_fail(db: Session, user: SysUser | None, username: str, ip: str) -> str | None:
-    """记录一次登录失败，累计达到阈值触发账号/IP 锁定；返回刚触发的锁定提示。"""
+def _lock_detail(message: str, remain_seconds: int) -> dict:
+    """锁定提示的结构化详情：message 给人看，remain_seconds 供前端倒计时。"""
+    return {"message": message, "locked": True, "remain_seconds": remain_seconds}
+
+
+def _record_fail(db: Session, user: SysUser | None, username: str, ip: str) -> dict | None:
+    """记录一次登录失败，累计达到阈值触发账号/IP 锁定；返回刚触发的锁定详情。"""
     now = datetime.now()
-    locked_msg = None
+    locked = None
     if user is not None:
         user.failed_login_count += 1
         if user.failed_login_count >= MAX_ACCOUNT_FAIL:
             user.locked_until = now + timedelta(minutes=LOCK_MINUTES)
-            locked_msg = f"连续失败{MAX_ACCOUNT_FAIL}次，账号已锁定{LOCK_MINUTES}分钟"
+            locked = _lock_detail(
+                f"连续失败{MAX_ACCOUNT_FAIL}次，账号已锁定{LOCK_MINUTES}分钟", LOCK_MINUTES * 60
+            )
         db.commit()
 
     rec = _ip_fail.setdefault(ip, {"count": 0, "lock_until": None})
     rec["count"] += 1
     if rec["count"] >= MAX_IP_FAIL:
         rec["lock_until"] = now + timedelta(minutes=LOCK_MINUTES)
-        if locked_msg is None:
-            locked_msg = f"IP 连续失败{MAX_IP_FAIL}次，已锁定{LOCK_MINUTES}分钟"
+        if locked is None:
+            locked = _lock_detail(
+                f"IP 连续失败{MAX_IP_FAIL}次，已锁定{LOCK_MINUTES}分钟", LOCK_MINUTES * 60
+            )
 
     write_log(
         db,
@@ -107,9 +116,9 @@ def _record_fail(db: Session, user: SysUser | None, username: str, ip: str) -> s
         action="登录失败",
         ip=ip,
         result=0,
-        error_message=locked_msg or "账号或密码错误",
+        error_message=locked["message"] if locked else "账号或密码错误",
     )
-    return locked_msg
+    return locked
 
 
 def login(db: Session, username: str, password: str, ip: str) -> dict:
@@ -120,8 +129,12 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
     ip_lock = _ip_fail.get(ip)
     if ip_lock and ip_lock.get("lock_until"):
         if ip_lock["lock_until"] > now:
-            remain = max(1, int((ip_lock["lock_until"] - now).total_seconds() // 60))
-            raise HTTPException(status_code=403, detail=f"IP 登录过于频繁，请 {remain} 分钟后重试")
+            remain_s = max(1, int((ip_lock["lock_until"] - now).total_seconds()))
+            remain = max(1, -(-remain_s // 60))
+            raise HTTPException(
+                status_code=403,
+                detail=_lock_detail(f"IP 登录过于频繁，请 {remain} 分钟后重试", remain_s),
+            )
         ip_lock["count"] = 0
         ip_lock["lock_until"] = None
 
@@ -129,18 +142,22 @@ def login(db: Session, username: str, password: str, ip: str) -> dict:
 
     # 账号锁定检查
     if user is not None and user.locked_until and user.locked_until > now:
-        remain = max(1, int((user.locked_until - now).total_seconds() // 60))
-        raise HTTPException(status_code=403, detail=f"账号已锁定，请 {remain} 分钟后重试")
+        remain_s = max(1, int((user.locked_until - now).total_seconds()))
+        remain = max(1, -(-remain_s // 60))
+        raise HTTPException(
+            status_code=403,
+            detail=_lock_detail(f"账号已锁定，请 {remain} 分钟后重试", remain_s),
+        )
 
     # 密码校验（不区分账号不存在与密码错误，避免账号枚举）；
     # 账号不存在时也执行一次同代价哈希校验，拉平响应时间防用户名枚举侧信道
     if user is None:
         pwd_context.verify(password, _DUMMY_BCRYPT_HASH)
-        locked_msg = _record_fail(db, None, username, ip)
-        raise HTTPException(status_code=401, detail=locked_msg or "账号或密码错误")
+        locked = _record_fail(db, None, username, ip)
+        raise HTTPException(status_code=401, detail=locked or "账号或密码错误")
     if not pwd_context.verify(password, user.password_hash):
-        locked_msg = _record_fail(db, user, username, ip)
-        raise HTTPException(status_code=401, detail=locked_msg or "账号或密码错误")
+        locked = _record_fail(db, user, username, ip)
+        raise HTTPException(status_code=401, detail=locked or "账号或密码错误")
 
     # 账号状态校验
     if user.status == 0:

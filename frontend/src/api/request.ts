@@ -101,15 +101,15 @@ request.interceptors.response.use(
       }
     }
 
+    // 登录接口的错误由登录页自行常驻展示（含锁定倒计时），拦截器不再弹 toast
+    if (isLogin) {
+      return Promise.reject(error)
+    }
+
     const msg = error.response?.data?.message || '请求失败'
     if (status === 401) {
-      // 登录接口 401（密码错误等）：提示但不跳转
-      if (!window.location.pathname.startsWith('/login')) {
-        message.error('登录已过期，请重新登录')
-        window.location.href = '/login'
-      } else {
-        message.error(msg)
-      }
+      message.error('登录已过期，请重新登录')
+      window.location.href = '/login'
     } else {
       message.error(msg === '请求失败' ? '网络异常，请稍后重试' : msg)
     }

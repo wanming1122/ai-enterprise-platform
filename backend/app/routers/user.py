@@ -12,6 +12,7 @@ from app.models.user import SysUser
 from app.schemas.user import UserCreate, UserUpdate
 from app.services import user_service
 from app.utils.page import page_result
+from app.utils.phone import check_phone
 from app.utils.response import ok
 
 router = APIRouter(prefix="/api/v1/users", tags=["用户管理"])
@@ -25,6 +26,20 @@ def _xlsx_response(content: bytes, filename: str) -> Response:
         media_type=XLSX_MEDIA,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
+
+
+@router.get("/check-phone")
+def check_phone_available(
+    phone: str = Query(...),
+    exclude_id: int | None = Query(default=None),
+    _: SysUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """检查手机号是否已被占用（登录态即可，供前端表单即时唯一性校验）。"""
+    result = check_phone(phone)
+    if not result.valid:
+        return ok({"valid": False, "exists": False})
+    return ok({"valid": True, "exists": user_service.phone_exists(db, result.normalized, exclude_id)})
 
 
 @router.get("/options")

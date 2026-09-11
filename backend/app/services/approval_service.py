@@ -15,7 +15,7 @@ from app.models.user_role_relation import SysUserRoleRelation
 from app.schemas.approval import RegisterApplyIn
 from app.services.auth_service import pwd_context
 from app.services.operation_log_service import write_log
-from app.services.user_service import validate_password
+from app.services.user_service import phone_exists, validate_password
 
 APPROVAL_STATUS = {0: "待审批", 1: "通过", 2: "驳回"}
 
@@ -71,6 +71,8 @@ def register_apply(db: Session, data: RegisterApplyIn, ip: str) -> dict:
     role = db.get(SysRole, data.apply_role_id)
     if role is None or role.status != 1 or role.role_type == 1:
         raise HTTPException(status_code=422, detail="申请角色不可用")
+    if phone_exists(db, data.phone):
+        raise HTTPException(status_code=422, detail="手机号已被使用")
     validate_password(data.password)
 
     user = SysUser(
@@ -139,6 +141,7 @@ def _finish_review(db: Session, approval_id: int, operator: SysUser, approve: bo
         if user.status == 0:
             user.status = 2
             user.username = f"{user.username[:40]}#rejected{user.id}"
+            user.phone = None  # 释放手机号唯一键占用，允许他人复用
     a.review_comment = comment
     a.reviewer_id = operator.id
     a.reviewed_at = datetime.now()

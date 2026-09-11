@@ -18,9 +18,10 @@ import { UserOutlined } from '@ant-design/icons'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useRef, useState } from 'react'
 import { profileApi, type ProfileUpdate } from '@/api/profile'
+import { userApi } from '@/api/user'
 import { useUserStore } from '@/stores/user'
 import type { MenuItem } from '@/types'
-import { phoneRule } from '@/utils/phone'
+import { isValidPhone, phoneRule } from '@/utils/phone'
 
 /** 头像文件压缩为 Data URL（最长边 256px，JPEG 0.8 质量），满足 Data URL 直存方案 */
 function compressToDataUrl(file: File, maxSide = 256): Promise<string> {
@@ -84,6 +85,21 @@ export default function ProfileInfo() {
   walkMenus(menus)
   if (!homeOptions.some((o) => o.value === '/dashboard')) {
     homeOptions.unshift({ value: '/dashboard', label: '工作台' })
+  }
+
+  // 手机号唯一性即时校验：失焦触发，排除本人；接口异常不拦截（后端提交时兜底）
+  const phoneUniqueValidator = async (_: unknown, value: unknown) => {
+    if (typeof value !== 'string' || !isValidPhone(value)) return
+    let exists = false
+    try {
+      const res = await userApi.checkPhone(value, userInfo.id)
+      exists = res.exists
+    } catch {
+      return
+    }
+    if (exists) {
+      return Promise.reject(new Error('手机号已被使用'))
+    }
   }
 
   const openEdit = () => {
@@ -271,7 +287,9 @@ export default function ProfileInfo() {
             rules={[
               { required: true, whitespace: true, message: '请输入手机号' },
               phoneRule(),
+              { validator: phoneUniqueValidator },
             ]}
+            validateTrigger="onBlur"
           >
             <Input placeholder="手机号" />
           </Form.Item>

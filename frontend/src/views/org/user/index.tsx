@@ -20,7 +20,7 @@ import { UploadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import HasPermission from '@/components/HasPermission'
-import { phoneRule } from '@/utils/phone'
+import { isValidPhone, phoneRule } from '@/utils/phone'
 import { positionApi, type PositionOption } from '@/api/position'
 import { saveBlob, userApi, type DeptOption, type ImportResult, type RoleOption, type UserForm } from '@/api/user'
 import type { UserInfo } from '@/types'
@@ -123,6 +123,21 @@ export default function UserManage() {
       role_ids: (record.roles ?? []).map((code) => Number(roleIdMap.get(code)) || 0).filter(Boolean),
     })
     setModalOpen(true)
+  }
+
+  // 手机号唯一性即时校验：失焦触发；接口异常时不拦截（提交时由后端兜底）
+  const phoneUniqueValidator = async (_: unknown, value: unknown) => {
+    if (typeof value !== 'string' || !isValidPhone(value)) return
+    let exists = false
+    try {
+      const res = await userApi.checkPhone(value, editing?.id)
+      exists = res.exists
+    } catch {
+      return
+    }
+    if (exists) {
+      return Promise.reject(new Error('手机号已被使用'))
+    }
   }
 
   const handleSubmit = async () => {
@@ -383,7 +398,9 @@ export default function UserManage() {
             rules={[
               { required: true, whitespace: true, message: '请输入手机号' },
               phoneRule(),
+              { validator: phoneUniqueValidator },
             ]}
+            validateTrigger="onBlur"
           >
             <Input placeholder="手机号" />
           </Form.Item>

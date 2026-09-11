@@ -28,6 +28,7 @@ export interface HeadcountStructure {
 }
 
 export interface DashboardSummary {
+  is_admin: boolean
   user_count: number
   dept_count: number
   position_count: number

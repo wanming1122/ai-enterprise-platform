@@ -19,7 +19,7 @@ class SysUser(Base):
     gender: Mapped[int] = mapped_column(TINYINT, default=0, comment="0未知 1男 2女")
     birthday: Mapped[date | None] = mapped_column(Date, comment="生日")
     email: Mapped[str | None] = mapped_column(String(128), comment="邮箱")
-    phone: Mapped[str | None] = mapped_column(String(20), comment="手机号")
+    phone: Mapped[str | None] = mapped_column(String(20), unique=True, comment="手机号")
     social_account: Mapped[str | None] = mapped_column(String(128), comment="社交账号")
     department_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("sys_department.id"), comment="所属部门"

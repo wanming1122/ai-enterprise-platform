@@ -3,6 +3,7 @@ from datetime import date, datetime
 
 from fastapi import HTTPException
 from passlib.context import CryptContext
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.user import SysUser
@@ -10,7 +11,7 @@ from app.schemas.profile import PasswordChange, PreferencesUpdate, ProfileUpdate
 from app.services import salary_service
 from app.services.attendance_service import list_records as list_attendance_records
 from app.services.operation_log_service import write_log
-from app.services.user_service import validate_password
+from app.services.user_service import phone_exists, validate_password
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -47,9 +48,17 @@ def update_profile(db: Session, user: SysUser, data: ProfileUpdate) -> dict:
     if "gender" in updates and updates["gender"] not in (0, 1, 2):
         raise HTTPException(status_code=422, detail="性别取值应为 0未知/1男/2女")
     _validate_avatar(updates.get("avatar"))
+    if "phone" in updates and phone_exists(db, updates["phone"], exclude_id=user.id):
+        raise HTTPException(status_code=422, detail="手机号已被使用")
     for field, value in updates.items():
         setattr(user, field, value)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "uk_user_phone" in str(exc.orig):
+            raise HTTPException(status_code=422, detail="手机号已被使用")
+        raise
     write_log(db, user_id=user.id, username=user.username, module="个人中心",
               action="修改个人资料", params=data.model_dump(exclude_unset=True, exclude={"avatar"}), result=1)
     return {"updated": len(updates)}

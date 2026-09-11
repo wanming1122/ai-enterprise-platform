@@ -69,6 +69,11 @@ export const userApi = {
   departments: () => get<DeptOption[]>('/departments/options'),
   roles: () => get<RoleOption[]>('/roles/options'),
   users: () => get<{ id: number; username: string; real_name: string | null }[]>('/users/options'),
+  /** 检查手机号是否已被占用（excludeId 用于编辑时排除自身） */
+  checkPhone: (phone: string, excludeId?: number) =>
+    get<{ valid: boolean; exists: boolean }>('/users/check-phone', {
+      params: { phone, exclude_id: excludeId },
+    }),
 }
 
 /** 触发浏览器下载 Blob 文件（延迟 revoke，避免个别浏览器下载尚未开始即被回收） */

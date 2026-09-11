@@ -1,7 +1,9 @@
 import { Button, Card, Form, Input, Modal, Select, Space, Steps, Typography, message } from 'antd'
-import { LockOutlined, UserOutlined } from '@ant-design/icons'
-import { useEffect, useState } from 'react'
+import { ClockCircleFilled, CloseCircleFilled, CloseOutlined, LockOutlined, UserOutlined } from '@ant-design/icons'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
+import type { AxiosError } from 'axios'
+import type { ApiResponse } from '@/types'
 import { useUserStore } from '@/stores/user'
 import { approvalApi, type RegisterRoleOption } from '@/api/approval'
 import { recoveryApi } from '@/api/recovery'
@@ -25,8 +27,32 @@ interface RecoveryFormValues {
 
 export default function Login() {
   const [loading, setLoading] = useState(false)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  const [errIs401, setErrIs401] = useState(false)
+  // 账号/IP 锁定截止时间戳（ms）；非 0 时禁用登录按钮并倒计时
+  const [lockUntil, setLockUntil] = useState<number | null>(null)
+  const [, setTick] = useState(0)
   const navigate = useNavigate()
   const { login } = useUserStore()
+
+  // 锁定倒计时：每秒刷新，到期自动解锁并清除提示
+  useEffect(() => {
+    if (!lockUntil) return
+    const timer = setInterval(() => {
+      if (Date.now() >= lockUntil) {
+        setLockUntil(null)
+        setErrMsg(null)
+        setErrIs401(false)
+      } else {
+        setTick((n) => n + 1)
+      }
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [lockUntil])
+
+  const lockRemain = lockUntil ? Math.max(0, Math.ceil((lockUntil - Date.now()) / 1000)) : 0
+  const lockMin = Math.floor(lockRemain / 60)
+  const lockSec = lockRemain % 60
 
   const [applyOpen, setApplyOpen] = useState(false)
   const [applyLoading, setApplyLoading] = useState(false)
@@ -113,13 +139,41 @@ export default function Login() {
     setLoading(true)
     try {
       await login(values.username, values.password)
+      setErrMsg(null)
+      setErrIs401(false)
       message.success('登录成功')
       navigate('/', { replace: true })
-    } catch {
-      // 错误提示由统一拦截器处理
+    } catch (e) {
+      const body = (e as AxiosError<ApiResponse<{ locked?: boolean; remain_seconds?: number } | null>>)?.response?.data
+      const lock = body?.data
+      if (lock?.locked && typeof lock.remain_seconds === 'number') {
+        // 触发锁定：切换为倒计时提示并禁用登录按钮
+        setErrMsg(null)
+        setErrIs401(false)
+        setLockUntil(Date.now() + lock.remain_seconds * 1000)
+      } else {
+        // 同一条错误只提示一次，避免每次点击重复弹出
+        const msg = body?.message || '网络异常，请稍后重试'
+        const is401 = body?.code === 401
+        if (msg !== errMsg || is401 !== errIs401) {
+          setErrMsg(msg)
+          setErrIs401(is401)
+        }
+      }
     } finally {
       setLoading(false)
     }
+  }
+
+  const noticeBox: CSSProperties = {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: '10px 12px',
+    borderRadius: 8,
+    fontSize: 14,
+    lineHeight: '22px',
+    marginBottom: 16,
   }
 
   return (
@@ -137,8 +191,35 @@ export default function Login() {
           企业管理系统
         </Typography.Title>
         <Typography.Paragraph type="secondary" style={{ textAlign: 'center' }}>
-          登录后进入工作台（认证接口由 M1 提供）
+          登录后进入工作台
         </Typography.Paragraph>
+        {lockRemain > 0 ? (
+          <div style={{ ...noticeBox, background: '#fffbe6', border: '1px solid #ffe58f', color: '#ad6800' }}>
+            <ClockCircleFilled style={{ color: '#faad14', fontSize: 16, marginTop: 3 }} />
+            <div style={{ flex: 1 }}>
+              <div>账号已锁定</div>
+              <div style={{ fontSize: 12, color: '#d48806', marginTop: 2 }}>
+                请 {lockMin} 分 {String(lockSec).padStart(2, '0')} 秒后重试
+              </div>
+            </div>
+          </div>
+        ) : errMsg ? (
+          <div style={{ ...noticeBox, background: '#fff2f0', border: '1px solid #ffccc7', color: '#cf1322' }}>
+            <CloseCircleFilled style={{ color: '#ff4d4f', fontSize: 16, marginTop: 3 }} />
+            <div style={{ flex: 1 }}>
+              <div>{errMsg}</div>
+              {errIs401 && (
+                <div style={{ fontSize: 12, color: '#ff7875', marginTop: 2 }}>
+                  连续失败 5 次将锁定账号 15 分钟
+                </div>
+              )}
+            </div>
+            <CloseOutlined
+              style={{ color: '#cf1322', cursor: 'pointer', fontSize: 12, marginTop: 4 }}
+              onClick={() => setErrMsg(null)}
+            />
+          </div>
+        ) : null}
         <Form onFinish={onFinish} size="large" autoComplete="off">
           <Form.Item name="username" rules={[{ required: true, message: '请输入账号' }]}>
             <Input prefix={<UserOutlined />} placeholder="账号" />
@@ -147,7 +228,7 @@ export default function Login() {
             <Input.Password prefix={<LockOutlined />} placeholder="密码" />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" block loading={loading}>
+            <Button type="primary" htmlType="submit" block loading={loading} disabled={lockRemain > 0}>
               登 录
             </Button>
           </Form.Item>

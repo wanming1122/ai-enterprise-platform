@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import HTTPException, UploadFile
 from passlib.context import CryptContext
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.department import SysDepartment
@@ -30,6 +31,22 @@ def validate_password(password: str) -> None:
     """强密码规则：至少 8 位且同时包含字母与数字。"""
     if len(password) < 8 or not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password):
         raise HTTPException(status_code=422, detail="密码需至少8位且包含字母和数字")
+
+
+def phone_exists(db: Session, phone: str | None, exclude_id: int | None = None) -> bool:
+    """手机号是否已被非软删用户占用（可选排除自身，用于编辑场景）。"""
+    if not phone:
+        return False
+    q = select(SysUser.id).where(SysUser.phone == phone, SysUser.status != 2)
+    if exclude_id is not None:
+        q = q.where(SysUser.id != exclude_id)
+    return db.scalar(q) is not None
+
+
+def _ensure_phone_available(db: Session, phone: str | None, exclude_id: int | None = None) -> None:
+    """应用层手机号唯一性校验（并发兜底依赖 uk_user_phone 唯一索引）。"""
+    if phone and phone_exists(db, phone, exclude_id):
+        raise HTTPException(status_code=422, detail="手机号已被使用")
 
 
 def _user_has_super_role(db: Session, user_id: int) -> bool:
@@ -176,6 +193,7 @@ def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
         select(SysUser).where(SysUser.username == data.username, SysUser.status != 2)
     ):
         raise HTTPException(status_code=422, detail="账号已存在")
+    _ensure_phone_available(db, data.phone)
     validate_password(data.password)
     _validate_position(db, data.position_id)
     _validate_department(db, data.department_id)
@@ -194,11 +212,17 @@ def create_user(db: Session, data: UserCreate, operator: SysUser) -> dict:
         status=1,
     )
     db.add(user)
-    db.flush()
-    _set_user_roles(db, user.id, data.role_ids, operator)
-    # 职位绑定角色时，新用户选该职位自动并入对应权限模板角色
-    sync_position_role(db, user.id, None, data.position_id)
-    db.commit()
+    try:
+        db.flush()
+        _set_user_roles(db, user.id, data.role_ids, operator)
+        # 职位绑定角色时，新用户选该职位自动并入对应权限模板角色
+        sync_position_role(db, user.id, None, data.position_id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "uk_user_phone" in str(exc.orig):
+            raise HTTPException(status_code=422, detail="手机号已被使用")
+        raise HTTPException(status_code=422, detail="账号已存在")
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
               action="新增用户", params=data.model_dump(exclude={"password"}), result=1)
     return serialize_user(db, user)
@@ -214,13 +238,21 @@ def update_user(db: Session, user_id: int, data: UserUpdate, operator: SysUser) 
         _validate_position(db, updates["position_id"])
     if "department_id" in updates:
         _validate_department(db, updates["department_id"])
+    if "phone" in updates:
+        _ensure_phone_available(db, updates["phone"], exclude_id=user.id)
     for field, value in updates.items():
         setattr(user, field, value)
-    if role_ids is not None:
-        _set_user_roles(db, user.id, role_ids, operator)
-    # 职位变更时同步权限模板角色：移除旧职位角色、并入新职位角色
-    sync_position_role(db, user.id, old_position_id, user.position_id)
-    db.commit()
+    try:
+        if role_ids is not None:
+            _set_user_roles(db, user.id, role_ids, operator)
+        # 职位变更时同步权限模板角色：移除旧职位角色、并入新职位角色
+        sync_position_role(db, user.id, old_position_id, user.position_id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if "uk_user_phone" in str(exc.orig):
+            raise HTTPException(status_code=422, detail="手机号已被使用")
+        raise HTTPException(status_code=422, detail="账号已存在")
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
               action="编辑用户", params={"id": user_id, **data.model_dump(exclude_unset=True)}, result=1)
     return serialize_user(db, user)
@@ -237,6 +269,8 @@ def delete_user(db: Session, user_id: int, operator: SysUser) -> None:
     suffix = f"#deleted{user.id}"
     if not user.username.endswith(suffix):
         user.username = f"{user.username[:64 - len(suffix)]}{suffix}"
+    # 释放手机号唯一键占用（uk_user_phone）：软删账号不再占用手机号
+    user.phone = None
     db.commit()
     write_log(db, user_id=operator.id, username=operator.username, module="用户管理",
               action="删除用户", params={"id": user_id}, result=1)
@@ -275,6 +309,10 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
     role_map = {r.code: r.id for r in db.scalars(select(SysRole).where(SysRole.status != 2)).all()}
     position_map = {p.name: p.id for p in db.scalars(select(SysPosition).where(SysPosition.status == 1)).all()}
     existing = set(db.scalars(select(SysUser.username).where(SysUser.status != 2)).all())
+    existing_phones = set(
+        db.scalars(select(SysUser.phone).where(SysUser.status != 2, SysUser.phone.isnot(None))).all()
+    )
+    used_phones: set[str] = set()
 
     success = 0
     errors: list[dict] = []
@@ -289,6 +327,9 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
         phone = (row.get("手机") or "").strip()
         if not phone:
             errors.append({"row": idx, "reason": "手机号为空"})
+            continue
+        if phone in existing_phones or phone in used_phones:
+            errors.append({"row": idx, "reason": f"手机号 {phone} 已被使用"})
             continue
         password = row.get("初始密码") or DEFAULT_IMPORT_PASSWORD
         try:
@@ -335,6 +376,7 @@ def import_users(db: Session, file: UploadFile, operator: SysUser) -> dict:
         _set_user_roles(db, user.id, role_ids, operator)
         sync_position_role(db, user.id, None, position_id)
         existing.add(username)
+        used_phones.add(phone)
         success += 1
 
     db.commit()
